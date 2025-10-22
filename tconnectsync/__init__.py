@@ -17,6 +17,7 @@ from .sync.tandemsource.choose_device import ChooseDevice as TandemSourceChooseD
 from .sync.tandemsource.process import ProcessTimeRange as TandemSourceProcessTimeRange
 from .check import check_login
 from .nightscout import NightscoutApi
+from .tidepool import TidepoolApi
 from .features import DEFAULT_FEATURES, ALL_FEATURES
 
 try:
@@ -28,7 +29,12 @@ try:
         NS_SECRET,
         NS_SKIP_TLS_VERIFY,
         PUMP_SERIAL_NUMBER,
-        NS_IGNORE_CONN_ERRORS
+        NS_IGNORE_CONN_ERRORS,
+        TIDEPOOL_USERNAME,
+        TIDEPOOL_PASSWORD,
+        TIDEPOOL_URL,
+        TIDEPOOL_ENV,
+        UPLOAD_DESTINATION
     )
     from . import secret
 except Exception as e:
@@ -92,8 +98,17 @@ def main(*args, **kwargs):
         logging.warn('NO USERNAME WAS PROVIDED. Ensure you have set TCONNECT_EMAIL appropriately.')
     if TCONNECT_PASSWORD == 'password':
         logging.warn('NO PASSWORD WAS PROVIDED. Ensure you have set TCONNECT_PASSWORD appropriately.')
-    if NS_URL == 'https://yournightscouturl/':
-        logging.warn('NO NIGHTSCOUT URL WAS PROVIDED. Ensure your have set NS_URL appropriately.')
+    
+    # Check upload destination configuration
+    if UPLOAD_DESTINATION == 'nightscout':
+        if NS_URL == 'https://yournightscouturl/':
+            logging.warn('NO NIGHTSCOUT URL WAS PROVIDED. Ensure your have set NS_URL appropriately.')
+    elif UPLOAD_DESTINATION == 'tidepool':
+        if TIDEPOOL_USERNAME == 'your_tidepool_email@example.com':
+            logging.warn('NO TIDEPOOL USERNAME WAS PROVIDED. Ensure you have set TIDEPOOL_USERNAME appropriately.')
+        if TIDEPOOL_PASSWORD == 'your_tidepool_password':
+            logging.warn('NO TIDEPOOL PASSWORD WAS PROVIDED. Ensure you have set TIDEPOOL_PASSWORD appropriately.')
+    
     if PUMP_SERIAL_NUMBER == '11111111':
         if args.tandem_source:
             secret.PUMP_SERIAL_NUMBER = None
@@ -102,7 +117,13 @@ def main(*args, **kwargs):
 
     tconnect = TConnectApi(TCONNECT_EMAIL, TCONNECT_PASSWORD, region)
 
-    nightscout = NightscoutApi(NS_URL, NS_SECRET, skip_verify=NS_SKIP_TLS_VERIFY, ignore_conn_errors=NS_IGNORE_CONN_ERRORS)
+    # Initialize the appropriate upload API based on configuration
+    if UPLOAD_DESTINATION == 'tidepool':
+        upload_api = TidepoolApi(TIDEPOOL_URL, TIDEPOOL_USERNAME, TIDEPOOL_PASSWORD)
+        logging.info(f"Using Tidepool as upload destination: {TIDEPOOL_ENV} environment")
+    else:
+        upload_api = NightscoutApi(NS_URL, NS_SECRET, skip_verify=NS_SKIP_TLS_VERIFY, ignore_conn_errors=NS_IGNORE_CONN_ERRORS)
+        logging.info("Using Nightscout as upload destination")
 
     if args.check_login:
         return check_login(tconnect, time_start, time_end)
@@ -119,10 +140,10 @@ def main(*args, **kwargs):
 
     if args.auto_update:
         u = TandemSourceAutoupdate(secret)
-        sys.exit(u.process(tconnect, nightscout, args.pretend, features=args.features))
+        sys.exit(u.process(tconnect, upload_api, args.pretend, features=args.features))
     else:
         tconnectDevice = TandemSourceChooseDevice(secret, tconnect).choose()
-        added, last_event_id = TandemSourceProcessTimeRange(tconnect, nightscout, tconnectDevice, pretend=args.pretend, secret=secret, features=args.features).process(time_start, time_end)
+        added, last_event_id = TandemSourceProcessTimeRange(tconnect, upload_api, tconnectDevice, pretend=args.pretend, secret=secret, features=args.features).process(time_start, time_end)
 
         # return exit code 0 if processed events
         sys.exit(0 if added>0 else 1)

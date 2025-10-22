@@ -11,13 +11,15 @@ from ...parser.nightscout import (
     SITECHANGE_EVENTTYPE,
     NightscoutEntry
 )
+from ...parser.tidepool import TidepoolEntry
+from ...secret import UPLOAD_DESTINATION
 
 logger = logging.getLogger(__name__)
 
 class ProcessCartridge:
-    def __init__(self, tconnect, nightscout, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
         self.tconnect = tconnect
-        self.nightscout = nightscout
+        self.upload_api = upload_api
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
@@ -27,11 +29,19 @@ class ProcessCartridge:
 
     def process(self, events, time_start, time_end):
         logger.debug("ProcessCartridge: querying for last uploaded entry")
-        last_upload = self.nightscout.last_uploaded_entry(SITECHANGE_EVENTTYPE, time_start=time_start, time_end=time_end)
-        last_upload_time = None
-        if last_upload:
-            last_upload_time = arrow.get(last_upload["created_at"])
-        logger.info("Last Nightscout sitechange upload: %s" % last_upload_time)
+        
+        if UPLOAD_DESTINATION == 'tidepool':
+            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload:
+                last_upload_time = arrow.get(last_upload["time"])
+            logger.info("Last Tidepool sitechange upload: %s" % last_upload_time)
+        else:
+            last_upload = self.upload_api.last_uploaded_entry(SITECHANGE_EVENTTYPE, time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload:
+                last_upload_time = arrow.get(last_upload["created_at"])
+            logger.info("Last Nightscout sitechange upload: %s" % last_upload_time)
 
         cartFilledEvents = []
         cannulaFilledEvents = []
@@ -53,48 +63,74 @@ class ProcessCartridge:
         cannulaFilledEvents.sort(key=lambda e: e.eventTimestamp)
         tubingFilledEvents.sort(key=lambda e: e.eventTimestamp)
 
-        ns_entries = []
+        upload_entries = []
         for cartFilled in cartFilledEvents:
-            ns_entries.append(self.cart_to_nsentry(cartFilled))
+            upload_entries.append(self.cart_to_entry(cartFilled))
 
         for cannulaFilled in cannulaFilledEvents:
-            ns_entries.append(self.cannula_to_nsentry(cannulaFilled))
+            upload_entries.append(self.cannula_to_entry(cannulaFilled))
 
         for tubingFilled in tubingFilledEvents:
-            ns_entries.append(self.tubing_to_nsentry(tubingFilled))
+            upload_entries.append(self.tubing_to_entry(tubingFilled))
 
 
-        return ns_entries
+        return upload_entries
 
-    def write(self, ns_entries):
+    def write(self, upload_entries):
         count = 0
-        for entry in ns_entries:
+        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
+        
+        for entry in upload_entries:
             if self.pretend:
-                logger.info("Would upload to Nightscout: %s" % entry)
+                logger.info("Would upload to %s: %s" % (destination, entry))
             else:
-                logger.info("Uploading to Nightscout: %s" % entry)
-                self.nightscout.upload_entry(entry)
+                logger.info("Uploading to %s: %s" % (destination, entry))
+                self.upload_api.upload_entry(entry)
             count += 1
 
         return count
 
-    def cart_to_nsentry(self, cartFilled):
-        return NightscoutEntry.sitechange(
-            created_at = cartFilled.eventTimestamp.format(),
-            reason = "Cartridge Filled" + (" (%du filled)" % round(cartFilled.v2Volume) if cartFilled.v2Volume else ""),
-            pump_event_id = "%s" % cartFilled.seqNum
-        )
+    def cart_to_entry(self, cartFilled):
+        reason = "Cartridge Filled" + (" (%du filled)" % round(cartFilled.v2Volume) if cartFilled.v2Volume else "")
+        if UPLOAD_DESTINATION == 'tidepool':
+            return TidepoolEntry.sitechange(
+                created_at = cartFilled.eventTimestamp.format(),
+                reason = reason,
+                pump_event_id = "%s" % cartFilled.seqNum
+            )
+        else:
+            return NightscoutEntry.sitechange(
+                created_at = cartFilled.eventTimestamp.format(),
+                reason = reason,
+                pump_event_id = "%s" % cartFilled.seqNum
+            )
 
-    def cannula_to_nsentry(self, cannulaFilled):
-        return NightscoutEntry.sitechange(
-            created_at = cannulaFilled.eventTimestamp.format(),
-            reason = "Cannula Filled" + (" (%du primed)" % round(cannulaFilled.primesize, 2) if cannulaFilled.primesize else ""),
-            pump_event_id = "%s" % cannulaFilled.seqNum
-        )
+    def cannula_to_entry(self, cannulaFilled):
+        reason = "Cannula Filled" + (" (%du primed)" % round(cannulaFilled.primesize, 2) if cannulaFilled.primesize else "")
+        if UPLOAD_DESTINATION == 'tidepool':
+            return TidepoolEntry.sitechange(
+                created_at = cannulaFilled.eventTimestamp.format(),
+                reason = reason,
+                pump_event_id = "%s" % cannulaFilled.seqNum
+            )
+        else:
+            return NightscoutEntry.sitechange(
+                created_at = cannulaFilled.eventTimestamp.format(),
+                reason = reason,
+                pump_event_id = "%s" % cannulaFilled.seqNum
+            )
 
-    def tubing_to_nsentry(self, tubingFilled):
-        return NightscoutEntry.sitechange(
-            created_at = tubingFilled.eventTimestamp.format(),
-            reason = "Tubing Filled" + (" (%du primed)" % round(tubingFilled.primesize) if tubingFilled.primesize else ""),
-            pump_event_id = "%s" % tubingFilled.seqNum
-        )
+    def tubing_to_entry(self, tubingFilled):
+        reason = "Tubing Filled" + (" (%du primed)" % round(tubingFilled.primesize) if tubingFilled.primesize else "")
+        if UPLOAD_DESTINATION == 'tidepool':
+            return TidepoolEntry.sitechange(
+                created_at = tubingFilled.eventTimestamp.format(),
+                reason = reason,
+                pump_event_id = "%s" % tubingFilled.seqNum
+            )
+        else:
+            return NightscoutEntry.sitechange(
+                created_at = tubingFilled.eventTimestamp.format(),
+                reason = reason,
+                pump_event_id = "%s" % tubingFilled.seqNum
+            )

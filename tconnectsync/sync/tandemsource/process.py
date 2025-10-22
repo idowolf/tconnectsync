@@ -20,9 +20,9 @@ from .update_profiles import UpdateProfiles
 logger = logging.getLogger(__name__)
 
 class ProcessTimeRange:
-    def __init__(self, tconnect, nightscout, tconnectDevice, pretend, secret, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect, upload_api, tconnectDevice, pretend, secret, features=DEFAULT_FEATURES):
         self.tconnect = tconnect
-        self.nightscout = nightscout
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnectDevice['tconnectDeviceId']
         self.max_date_with_events = tconnectDevice['maxDateWithEvents']
         self.pretend = pretend
@@ -78,7 +78,7 @@ class ProcessTimeRange:
         processed_count = 0
         for clazz, events in for_eventclass.items():
             if clazz in self.event_classes.keys():
-                c = self.event_classes[clazz](self.tconnect, self.nightscout, self.tconnect_device_id, self.pretend, self.features)
+                c = self.event_classes[clazz](self.tconnect, self.upload_api, self.tconnect_device_id, self.pretend, self.features)
                 if c.enabled():
                     logger.info("%s is enabled from features %s" % (clazz, self.features))
                     ns_entries = c.process(events, events_first_time, events_last_time)
@@ -89,7 +89,7 @@ class ProcessTimeRange:
                     logger.info("Skipping %s, is not enabled from features %s" % (clazz, self.features))
 
         for updater_class in self.updater_classes:
-            c = updater_class(self.tconnect, self.nightscout, self.tconnect_device_id, self.pretend, self.features)
+            c = updater_class(self.tconnect, self.upload_api, self.tconnect_device_id, self.pretend, self.features)
             if c.enabled():
                 logger.info("%s is enabled from features %s" % (updater_class.__name__, self.features))
                 done = c.update(self.pretend)

@@ -13,13 +13,15 @@ from ...parser.nightscout import (
     CGM_STOP_EVENTTYPE,
     NightscoutEntry
 )
+from ...parser.tidepool import TidepoolEntry
+from ...secret import UPLOAD_DESTINATION
 
 logger = logging.getLogger(__name__)
 
 class ProcessCGMStartJoinStop:
-    def __init__(self, tconnect, nightscout, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
         self.tconnect = tconnect
-        self.nightscout = nightscout
+        self.upload_api = upload_api
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
@@ -28,11 +30,18 @@ class ProcessCGMStartJoinStop:
         return features.PUMP_EVENTS in self.features or features.CGM_ALERTS in self.features
 
     def process(self, events, time_start, time_end):
+        if UPLOAD_DESTINATION == 'tidepool':
+            # Tidepool doesn't support explicit CGM sensor start/stop/join events
+            # The presence of CGM data (cbg entries) implies an active sensor
+            logger.info("ProcessCGMStartJoinStop: Skipping CGM session events for Tidepool (not supported)")
+            return []
+        
+        # For Nightscout, query multiple event types
         last_upload = None
         last_upload_time = None
         for eventtype in [CGM_START_EVENTTYPE, CGM_JOIN_EVENTTYPE, CGM_STOP_EVENTTYPE]:
             logger.debug("ProcessCGMStartJoinStop: querying for last uploaded entry for %s" % eventtype)
-            _last_upload = self.nightscout.last_uploaded_entry(eventtype, time_start=time_start, time_end=time_end)
+            _last_upload = self.upload_api.last_uploaded_entry(eventtype, time_start=time_start, time_end=time_end)
             _last_upload_time = None
             if _last_upload:
                 _last_upload_time = arrow.get(_last_upload["created_at"])
@@ -57,23 +66,51 @@ class ProcessCGMStartJoinStop:
 
         allEvents.sort(key=lambda e: e.eventTimestamp)
 
-        ns_entries = []
+        upload_entries = []
         for event in allEvents:
-            ns_entries.append(self.to_nsentry(event))
+            upload_entries.append(self.to_entry(event))
 
-        return ns_entries
+        return upload_entries
 
-    def write(self, ns_entries):
+    def write(self, upload_entries):
         count = 0
-        for entry in ns_entries:
+        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
+        
+        for entry in upload_entries:
             if self.pretend:
-                logger.info("Would upload to Nightscout: %s" % entry)
+                logger.info("Would upload to %s: %s" % (destination, entry))
             else:
-                logger.info("Uploading to Nightscout: %s" % entry)
-                self.nightscout.upload_entry(entry)
+                logger.info("Uploading to %s: %s" % (destination, entry))
+                self.upload_api.upload_entry(entry)
             count += 1
 
         return count
+
+    def to_entry(self, event):
+        if UPLOAD_DESTINATION == 'tidepool':
+            return self.to_tidepool(event)
+        else:
+            return self.to_nsentry(event)
+    
+    def to_tidepool(self, event):
+        if type(event) in EventClass._CGM_START:
+            return TidepoolEntry.cgm_start(
+                created_at = event.eventTimestamp.format(),
+                reason = "CGM Session Started",
+                pump_event_id = "%s" % event.seqNum
+            )
+        elif type(event) in EventClass._CGM_JOIN:
+            return TidepoolEntry.cgm_join(
+                created_at = event.eventTimestamp.format(),
+                reason = "CGM Session Joined",
+                pump_event_id = "%s" % event.seqNum
+            )
+        elif type(event) in EventClass._CGM_STOP:
+            return TidepoolEntry.cgm_stop(
+                created_at = event.eventTimestamp.format(),
+                reason = "CGM Session Stopped",
+                pump_event_id = "%s" % event.seqNum
+            )
 
     def to_nsentry(self, event):
         if type(event) in EventClass._CGM_START:

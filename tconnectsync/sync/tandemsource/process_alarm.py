@@ -11,13 +11,15 @@ from ...parser.nightscout import (
     ALARM_EVENTTYPE,
     NightscoutEntry
 )
+from ...parser.tidepool import TidepoolEntry
+from ...secret import UPLOAD_DESTINATION
 
 logger = logging.getLogger(__name__)
 
 class ProcessAlarm:
-    def __init__(self, tconnect, nightscout, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
         self.tconnect = tconnect
-        self.nightscout = nightscout
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
@@ -27,13 +29,23 @@ class ProcessAlarm:
 
     def process(self, events, time_start, time_end):
         logger.debug("ProcessAlarm: querying for last uploaded alarm")
-        last_upload = self.nightscout.last_uploaded_entry(ALARM_EVENTTYPE, time_start=time_start, time_end=time_end)
-        last_upload_time = None
-        if last_upload:
-            last_upload_time = arrow.get(last_upload["created_at"])
-        logger.info("Last Nightscout alarm upload: %s" % last_upload_time)
+        
+        # Query for last upload based on destination
+        if UPLOAD_DESTINATION == 'tidepool':
+            # For Tidepool, alarms are deviceEvent type
+            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload:
+                last_upload_time = arrow.get(last_upload["time"])
+            logger.info("Last Tidepool alarm upload: %s" % last_upload_time)
+        else:
+            last_upload = self.upload_api.last_uploaded_entry(ALARM_EVENTTYPE, time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload:
+                last_upload_time = arrow.get(last_upload["created_at"])
+            logger.info("Last Nightscout alarm upload: %s" % last_upload_time)
 
-        ns_entries = []
+        upload_entries = []
         for event in sorted(events, key=lambda x: x.eventTimestamp):
             if last_upload_time and arrow.get(event.eventTimestamp) <= last_upload_time:
                 if self.pretend:
@@ -43,10 +55,10 @@ class ProcessAlarm:
             if self.skip_event(event):
                 continue
 
-            ns_entries.append(self.alarm_to_nsentry(event))
+            upload_entries.append(self.alarm_to_entry(event))
 
 
-        return ns_entries
+        return upload_entries
 
     def skip_event(self, event):
         return event.alarmid in (
@@ -54,20 +66,50 @@ class ProcessAlarm:
             eventtypes.LidAlarmActivated.AlarmidEnum.ResumePumpAlarm2
         )
 
-    def write(self, ns_entries):
+    def write(self, upload_entries):
         count = 0
-        for entry in ns_entries:
+        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
+        
+        for entry in upload_entries:
             if self.pretend:
-                logger.info("Would upload to Nightscout: %s" % entry)
+                logger.info("Would upload to %s: %s" % (destination, entry))
             else:
-                logger.info("Uploading to Nightscout: %s" % entry)
-                self.nightscout.upload_entry(entry)
+                logger.info("Uploading to %s: %s" % (destination, entry))
+                self.upload_api.upload_entry(entry)
             count += 1
 
         return count
 
+    def alarm_to_entry(self, event):
+        """
+        Convert alarm event to either Nightscout or Tidepool format based on UPLOAD_DESTINATION.
+        """
+        if UPLOAD_DESTINATION == 'tidepool':
+            return self.alarm_to_tidepool(event)
+        else:
+            return self.alarm_to_nsentry(event)
+    
+    def alarm_to_tidepool(self, event):
+        """
+        Convert alarm event to Tidepool format.
+        """
+        if type(event) == eventtypes.LidAlarmActivated:
+            return TidepoolEntry.alarm(
+                created_at = event.eventTimestamp.format(),
+                reason = "%s" % event.alarmid.name,
+                pump_event_id = "%s" % event.seqNum
+            )
+        elif type(event) == eventtypes.LidMalfunctionActivated:
+            return TidepoolEntry.alarm(
+                created_at = event.eventTimestamp.format(),
+                reason = "Malfunction",
+                pump_event_id = "%s" % event.seqNum
+            )
 
     def alarm_to_nsentry(self, event):
+        """
+        Convert alarm event to Nightscout format (original implementation).
+        """
         if type(event) == eventtypes.LidAlarmActivated:
             return NightscoutEntry.alarm(
                 created_at = event.eventTimestamp.format(),

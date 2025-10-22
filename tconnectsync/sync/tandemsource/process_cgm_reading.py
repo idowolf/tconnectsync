@@ -12,13 +12,15 @@ from ...parser.nightscout import (
     CGM_START_EVENTTYPE,
     NightscoutEntry
 )
+from ...parser.tidepool import TidepoolEntry
+from ...secret import UPLOAD_DESTINATION
 
 logger = logging.getLogger(__name__)
 
 class ProcessCGMReading:
-    def __init__(self, tconnect, nightscout, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
         self.tconnect = tconnect
-        self.nightscout = nightscout
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
@@ -28,13 +30,22 @@ class ProcessCGMReading:
 
     def process(self, events, time_start, time_end):
         logger.debug("ProcessCGMReading: querying for last uploaded entry")
-        last_upload = self.nightscout.last_uploaded_bg_entry(time_start=time_start, time_end=time_end)
-        last_upload_time = None
-        if last_upload and "dateString" in last_upload:
-            last_upload_time = arrow.get(last_upload["dateString"])
-        elif last_upload and "date" in last_upload:
-            last_upload_time = arrow.get(last_upload["date"])
-        logger.info("ProcessCGMReading: Last Nightscout bg upload: %s" % last_upload_time)
+        
+        # Query for last upload based on destination
+        if UPLOAD_DESTINATION == 'tidepool':
+            last_upload = self.upload_api.last_uploaded_bg_entry(time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload:
+                last_upload_time = arrow.get(last_upload["time"])
+            logger.info("ProcessCGMReading: Last Tidepool bg upload: %s" % last_upload_time)
+        else:
+            last_upload = self.upload_api.last_uploaded_bg_entry(time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload and "dateString" in last_upload:
+                last_upload_time = arrow.get(last_upload["dateString"])
+            elif last_upload and "date" in last_upload:
+                last_upload_time = arrow.get(last_upload["date"])
+            logger.info("ProcessCGMReading: Last Nightscout bg upload: %s" % last_upload_time)
 
         readings = []
         for event in sorted(events, key=lambda x: self.timestamp_for(x)):
@@ -45,20 +56,25 @@ class ProcessCGMReading:
 
             readings.append(event)
 
-        ns_entries = []
+        upload_entries = []
         for event in readings:
-            ns_entries.append(self.to_nsentry(event))
+            upload_entries.append(self.to_entry(event))
 
-        return ns_entries
+        return upload_entries
 
-    def write(self, ns_entries):
+    def write(self, upload_entries):
         count = 0
-        for entry in ns_entries:
+        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
+        
+        for entry in upload_entries:
             if self.pretend:
-                logger.info("Would upload to Nightscout: %s" % entry)
+                logger.info("Would upload to %s: %s" % (destination, entry))
             else:
-                logger.info("Uploading to Nightscout: %s" % entry)
-                self.nightscout.upload_entry(entry, entity='entries')
+                logger.info("Uploading to %s: %s" % (destination, entry))
+                if UPLOAD_DESTINATION == 'tidepool':
+                    self.upload_api.upload_entry(entry)
+                else:
+                    self.upload_api.upload_entry(entry, entity='entries')
             count += 1
 
         return count
@@ -68,7 +84,29 @@ class ProcessCGMReading:
         # might not be the time it actually occurred, so we use the egvTimestamp
         return arrow.get(TANDEM_EPOCH + event.egvTimestamp)
 
+    def to_entry(self, event):
+        """
+        Convert CGM reading to either Nightscout or Tidepool format based on UPLOAD_DESTINATION.
+        """
+        if UPLOAD_DESTINATION == 'tidepool':
+            return self.to_tidepool(event)
+        else:
+            return self.to_nsentry(event)
+    
+    def to_tidepool(self, event):
+        """
+        Convert CGM reading to Tidepool format.
+        """
+        return TidepoolEntry.cgm(
+            sgv = event.currentglucosedisplayvalue,
+            created_at = self.timestamp_for(event).format(),
+            pump_event_id = "%s" % event.seqNum,
+        )
+
     def to_nsentry(self, event):
+        """
+        Convert CGM reading to Nightscout format (original implementation).
+        """
         return NightscoutEntry.entry(
             sgv = event.currentglucosedisplayvalue,
             created_at = self.timestamp_for(event).format(),

@@ -55,6 +55,15 @@ if not get('NS_SECRET') and get('API_SECRET'):
 NS_SKIP_TLS_VERIFY = get_bool('NS_SKIP_TLS_VERIFY', 'false')
 NS_IGNORE_CONN_ERRORS = get_bool('NS_IGNORE_CONN_ERRORS', 'false')
 
+# Tidepool configuration
+TIDEPOOL_USERNAME = get('TIDEPOOL_USERNAME', 'your_tidepool_email@example.com')
+TIDEPOOL_PASSWORD = get('TIDEPOOL_PASSWORD', 'your_tidepool_password')
+TIDEPOOL_ENV = get_one_of('TIDEPOOL_ENV', 'int', ['int', 'prd'])
+TIDEPOOL_URL = 'https://api.tidepool.org' if TIDEPOOL_ENV == 'prd' else 'https://int-api.tidepool.org'
+
+# Upload destination: 'nightscout' or 'tidepool'
+UPLOAD_DESTINATION = get_one_of('UPLOAD_DESTINATION', 'nightscout', ['nightscout', 'tidepool'])
+
 # This should be the timezone your pump is set to.
 TIMEZONE_NAME = get('TIMEZONE_NAME', 'America/New_York')
 

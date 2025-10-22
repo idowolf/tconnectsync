@@ -10,7 +10,7 @@ from ...domain.tandemsource.pump_settings import PumpSettings
 from ...parser.nightscout import (
     NightscoutEntry, ENTERED_BY
 )
-from ...secret import NIGHTSCOUT_PROFILE_UPLOAD_MODE
+from ...secret import NIGHTSCOUT_PROFILE_UPLOAD_MODE, UPLOAD_DESTINATION
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +18,9 @@ def _get_default_upload_mode():
     return NIGHTSCOUT_PROFILE_UPLOAD_MODE
 
 class UpdateProfiles:
-    def __init__(self, tconnect, nightscout, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
         self.tconnect = tconnect
-        self.nightscout = nightscout
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
@@ -29,6 +29,12 @@ class UpdateProfiles:
         return features.PROFILES in self.features
 
     def update(self, pretend):
+        # Tidepool doesn't use Nightscout-style profiles
+        # Profile management for Tidepool would need different implementation
+        if UPLOAD_DESTINATION == 'tidepool':
+            logger.info("UpdateProfiles: Skipping profile update for Tidepool (not supported yet)")
+            return False
+        
         upload_mode = _get_default_upload_mode()
         logger.debug("UpdateProfiles: getting Tandem Source profile data")
 
@@ -48,7 +54,7 @@ class UpdateProfiles:
         pump_settings = PumpSettings.from_dict(raw_settings)
         logger.info("Current pump settings: %s" % pump_settings)
 
-        ns_profile_obj = self.nightscout.current_profile()
+        ns_profile_obj = self.upload_api.current_profile()
         logger.debug("Current Nightscout profile: %s" % ns_profile_obj)
         if ns_profile_obj is None:
             ns_profile_obj = {}
@@ -65,14 +71,14 @@ class UpdateProfiles:
             logger.info("Adding new Nightscout profiles object: %s", profile_to_upload)
 
             if not pretend:
-                self.nightscout.upload_entry(profile_to_upload, entity='profile')
+                self.upload_api.upload_entry(profile_to_upload, entity='profile')
             return True
 
         elif upload_mode == 'replace':
             logger.info("Replacing new Nightscout profiles object: %s", ns_profile_new)
 
             if not pretend:
-                self.nightscout.put_entry(ns_profile_new, entity='profile')
+                self.upload_api.put_entry(ns_profile_new, entity='profile')
             return True
 
         else:
