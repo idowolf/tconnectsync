@@ -299,14 +299,32 @@ class TandemSourceApi:
         audience = self.TDC_OIDC_CLIENT_ID
         issuer = self.TDC_OIDC_ISSUER
 
-        # Decode and verify the ID Token
-        id_token_claims = jwt.decode(
-            id_token,
-            key=key,
-            algorithms=['RS256'],
-            audience=audience,
-            issuer=issuer,
-        )
+        # Decode and verify the ID Token. Per OIDC the id_token's `aud` equals
+        # the client_id, so validate it. But if Tandem ever issues an id_token
+        # with a different audience, fall back to skipping only the audience
+        # check (signature + issuer are still verified) rather than failing
+        # login outright.
+        id_token_claims: JwtClaims
+        try:
+            id_token_claims = jwt.decode(
+                id_token,
+                key=key,
+                algorithms=['RS256'],
+                audience=audience,
+                issuer=issuer,
+            )
+        except jwt.InvalidAudienceError:
+            logger.warning(
+                "id_token audience did not match client_id %s; decoding without audience verification",
+                audience,
+            )
+            id_token_claims = jwt.decode(
+                id_token,
+                key=key,
+                algorithms=['RS256'],
+                issuer=issuer,
+                options={"verify_aud": False},
+            )
 
         logger.info("Decoded JWT: %s" % json.dumps(id_token_claims))
 
