@@ -52,6 +52,60 @@ class FakeTandemSourceApi:
         return False
 
 
+# A fuller real-shape settings.details for end-to-end compare_profiles tests.
+FULL_SETTINGS_DETAILS = {
+    'profiles': {
+        'numberOfProfiles': 1, 'activeSegment': 0, 'activeIdp': 0,
+        'profile': [
+            {
+                'idp': 0, 'timeDependentSegmentNumber': 2, 'name': 'A',
+                'carbEntry': 'UnitsAsCarbs', 'maxBolus': 25000, 'insulinDuration': 300,
+                'timeDependentSegments': [
+                    {'startTime': 0, 'basalRate': 800, 'carbRatio': 6000, 'targetBg': 110, 'isf': 30, 'status': []},
+                    {'startTime': 480, 'basalRate': 1200, 'carbRatio': 6000, 'targetBg': 110, 'isf': 30, 'status': []},
+                ],
+            },
+        ],
+    },
+    'cgmSettings': {'highGlucoseAlertMgPerDl': 200, 'lowGlucoseAlertMgPerDl': 80},
+}
+
+
+class TestCompareProfilesWithNewSettings(unittest.TestCase):
+    maxDiff = None
+
+    def _updater(self):
+        tconnect = TConnectApi()
+        tconnect._tandemsource = FakeTandemSourceApi([])
+        return UpdateProfiles(tconnect, NightscoutApi(), DEVICE_ID, pretend=True)
+
+    def test_builds_ns_profile_from_new_settings(self):
+        pump_settings = PumpSettings.from_dict(FULL_SETTINGS_DETAILS)
+        changed, new_profile = self._updater().compare_profiles(pump_settings, {})
+
+        self.assertTrue(changed)
+        self.assertEqual(new_profile['defaultProfile'], 'A')
+        self.assertIn('A', new_profile['store'])
+        store = new_profile['store']['A']
+        # milliunit->unit scaling and per-segment schedule preserved
+        self.assertEqual([b['value'] for b in store['basal']], [0.8, 1.2])
+        self.assertEqual([b['time'] for b in store['basal']], ['00:00', '08:00'])
+        self.assertEqual(store['carbratio'][0]['value'], 6.0)
+        self.assertEqual(store['sens'][0]['value'], 30)
+        # target_low/high sourced from the flat cgmSettings
+        self.assertEqual(store['target_low'][0]['value'], 80)
+        self.assertEqual(store['target_high'][0]['value'], 200)
+        self.assertEqual(store['dia'], '5.0')
+
+    def test_no_change_when_ns_already_matches(self):
+        pump_settings = PumpSettings.from_dict(FULL_SETTINGS_DETAILS)
+        updater = self._updater()
+        _, built = updater.compare_profiles(pump_settings, {})
+        # Feed the freshly built profile back in as the current NS profile.
+        changed, _ = updater.compare_profiles(pump_settings, built)
+        self.assertFalse(changed)
+
+
 class TestUpdateProfilesSettingsSourcing(unittest.TestCase):
     maxDiff = None
 
