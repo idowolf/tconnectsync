@@ -147,6 +147,27 @@ class BffPumper(TypedDict, total=False):
     pumps: List[BffPump]
 
 
+class PumpMetadata(TypedDict, total=False):
+    """Normalized per-pump metadata the sync code consumes, adapted from a
+    BffPump (see TandemSourceApi.pump_metadata()). This is the stable
+    replacement for the old reportsfacade PumpEventMetadata shape.
+
+    deviceId is the UUID assignmentId used as the pump-logs path segment (it
+    replaces the old numeric tconnectDeviceId). date fields are ISO-8601
+    strings or None; settings is the pump settings blob (BffPump.settings
+    .details) or None for a pump that has never uploaded.
+    """
+    deviceId: str
+    serialNumber: str
+    modelNumber: str
+    modelName: str
+    softwareVersion: str
+    algorithm: str
+    maxDateWithEvents: Optional[str]
+    minDateWithEvents: Optional[str]
+    settings: Optional[dict]
+
+
 class TandemSourceApi:
     # Common URLs that are shared between regions
     LOGIN_PAGE_URL = 'https://sso.tandemdiabetes.com/'
@@ -567,6 +588,30 @@ class TandemSourceApi:
         by the pump-logs endpoint, and pumps[].settings.details carries the
         pump settings blob."""
         return self.get('api/reports/bff/pumper/%s' % (self.pumperId), {})
+
+    @staticmethod
+    def _bff_pump_to_metadata(pump: BffPump) -> PumpMetadata:
+        """Adapt one BffPump into the normalized PumpMetadata shape."""
+        settings = pump.get('settings')
+        data_range = pump.get('availableDataRange') or {}
+        meta: PumpMetadata = {
+            'deviceId': pump['assignmentId'],
+            'serialNumber': pump['serialNumber'],
+            'modelNumber': pump['modelNumber'],
+            'modelName': pump['modelName'],
+            'softwareVersion': pump['softwareVersion'],
+            'algorithm': pump['algorithm'],
+            'maxDateWithEvents': pump.get('maxDateOfEvents'),
+            'minDateWithEvents': data_range.get('start'),
+            'settings': settings['details'] if settings else None,
+        }
+        return meta
+
+    def pump_metadata(self) -> List[PumpMetadata]:
+        """Normalized device list adapted from get_pumper(). This is the
+        BFF-backed replacement for pump_event_metadata()."""
+        pumper = self.get_pumper()
+        return [self._bff_pump_to_metadata(p) for p in pumper.get('pumps', [])]
 
     # Matches the Tandem Source web app's getLogIDList() (55 IDs) as observed in
     # the live GET api/reports/bff/pump-logs request. Includes FSL3 ids 477/480/486.
