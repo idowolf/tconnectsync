@@ -422,9 +422,12 @@ class TestProcessCGMReadingFSL3(unittest.TestCase):
 # Real LID_CGM_DATA_G7 pump-logs JSON events captured from a live Mobi account
 # (deviceAssignmentId redacted). These exercise the production path
 # (Events -> ProcessCGMReading) rather than the binary decoder.
-G7_JSON_1 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 484329, "pumpDateTime": "2026-05-26T00:04:12", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -3, "algorithmState": 32, "rssi": -82, "currentGlucoseDisplayValue": 347, "egvTimeStamp": 580608249, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-26T00:04:12Z"}
-G7_JSON_2 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 484338, "pumpDateTime": "2026-05-26T00:09:12", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -4, "algorithmState": 32, "rssi": -84, "currentGlucoseDisplayValue": 345, "egvTimeStamp": 580608548, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-26T00:09:12Z"}
-G7_JSON_3 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 484351, "pumpDateTime": "2026-05-26T00:14:12", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -4, "algorithmState": 32, "rssi": -78, "currentGlucoseDisplayValue": 341, "egvTimeStamp": 580608849, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-26T00:14:12Z"}
+G7_JSON_1 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 416999, "pumpDateTime": "2026-05-07T00:01:04", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": 8, "algorithmState": 32, "rssi": -59, "currentGlucoseDisplayValue": 249, "egvTimeStamp": 578966461, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-07T00:01:04Z"}
+G7_JSON_2 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 417212, "pumpDateTime": "2026-05-07T01:06:04", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -12, "algorithmState": 32, "rssi": -57, "currentGlucoseDisplayValue": 193, "egvTimeStamp": 578970361, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-07T01:06:04Z"}
+G7_JSON_3 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 417300, "pumpDateTime": "2026-05-07T01:51:04", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -10, "algorithmState": 32, "rssi": -51, "currentGlucoseDisplayValue": 118, "egvTimeStamp": 578973061, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-07T01:51:04Z"}
+G7_JSON_4 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 440616, "pumpDateTime": "2026-05-13T19:46:30", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": 5, "algorithmState": 32, "rssi": -67, "currentGlucoseDisplayValue": 321, "egvTimeStamp": 579555987, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-13T19:46:30Z"}
+G7_JSON_5 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 450283, "pumpDateTime": "2026-05-16T15:34:52", "eventProperties": {"glucoseValueStatus": 2, "cgmDataType": [0], "rate": -5, "algorithmState": 32, "rssi": -52, "currentGlucoseDisplayValue": 38, "egvTimeStamp": 579800089, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-16T15:34:52Z"}
+G7_JSON_6 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 483972, "pumpDateTime": "2026-05-25T22:14:11", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": 15, "algorithmState": 32, "rssi": -79, "currentGlucoseDisplayValue": 361, "egvTimeStamp": 580601648, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-25T22:14:11Z"}
 
 
 class TestProcessCGMReadingG7Json(unittest.TestCase):
@@ -440,28 +443,48 @@ class TestProcessCGMReadingG7Json(unittest.TestCase):
     def test_single_g7_json_reading(self):
         events = list(Events([dict(G7_JSON_1)]))
         self.assertEqual(type(events[0]), eventtypes.LidCgmDataG7)
-        self.assertEqual(events[0].currentglucosedisplayvalue, 347)
-        self.assertEqual(events[0].egvTimestamp, 580608249)
+        self.assertEqual(events[0].egvTimestamp, 578966461)
 
         p = self.process.process(events, time_start=None, time_end=None)
         self.assertEqual(len(p), 1)
-        self.assertEqual(p[0]['sgv'], 347)
-        # created_at is derived from egvTimeStamp (3s before pumpDateTime here)
-        self.assertEqual(p[0]['dateString'], '2026-05-26T00:04:09-0400')
-        self.assertEqual(p[0]['pump_event_id'], '484329')
+        self.assertEqual(p[0]['sgv'], 249)
+        self.assertEqual(p[0]['dateString'], '2026-05-07T00:01:01-0400')
+        self.assertEqual(p[0]['pump_event_id'], '416999')
 
-    def test_multiple_g7_json_readings(self):
-        events = list(Events([dict(G7_JSON_1), dict(G7_JSON_2), dict(G7_JSON_3)]))
+    def test_diverse_glucose_range(self):
+        events = list(Events([
+            dict(G7_JSON_1), dict(G7_JSON_2), dict(G7_JSON_3),
+            dict(G7_JSON_4), dict(G7_JSON_5), dict(G7_JSON_6)
+        ]))
         p = self.process.process(events, time_start=None, time_end=None)
-        self.assertEqual([e['sgv'] for e in p], [347, 345, 341])
-        self.assertEqual([e['pump_event_id'] for e in p], ['484329', '484338', '484351'])
+        # The SpecialLow reading (raw 38) is reported as the LOW sentinel 39.
+        self.assertEqual([e['sgv'] for e in p], [249, 193, 118, 321, 39, 361])
+        self.assertEqual([e['dateString'] for e in p], [
+            '2026-05-07T00:01:01-0400',
+            '2026-05-07T01:06:01-0400',
+            '2026-05-07T01:51:01-0400',
+            '2026-05-13T19:46:27-0400',
+            '2026-05-16T15:34:49-0400',
+            '2026-05-25T22:14:08-0400',
+        ])
+        self.assertEqual([e['pump_event_id'] for e in p], [
+            '416999', '417212', '417300', '440616', '450283', '483972'
+        ])
+
+    def test_special_low_reading(self):
+        # glucoseValueStatus SpecialLow reports the LOW sentinel (39), not the
+        # raw below-range display value (38).
+        events = list(Events([dict(G7_JSON_5)]))
+        p = self.process.process(events, time_start=None, time_end=None)
+        self.assertEqual(len(p), 1)
+        self.assertEqual(p[0]['sgv'], 39)
 
     def test_skips_readings_at_or_before_last_upload(self):
         # Only readings strictly after the last Nightscout upload are returned.
-        self.nightscout.last_uploaded_bg_entry = lambda *args, **kwargs: {'dateString': '2026-05-26T00:09:08-0400'}
+        self.nightscout.last_uploaded_bg_entry = lambda *args, **kwargs: {'dateString': '2026-05-07T01:06:01-0400'}
         events = list(Events([dict(G7_JSON_1), dict(G7_JSON_2), dict(G7_JSON_3)]))
         p = self.process.process(events, time_start=None, time_end=None)
-        self.assertEqual([e['sgv'] for e in p], [341])
+        self.assertEqual([e['sgv'] for e in p], [118])
 
 
 if __name__ == '__main__':

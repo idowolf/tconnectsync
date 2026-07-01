@@ -5,7 +5,7 @@ import arrow
 
 from tconnectsync.sync.tandemsource.process import ProcessTimeRange
 from tconnectsync.eventparser import events as eventtypes
-from tconnectsync.eventparser.generic import Event
+from tconnectsync.eventparser.generic import Event, Events
 
 from ...api.fake import TConnectApi
 from ...nightscout_fake import NightscoutApi
@@ -144,6 +144,78 @@ class TestProcessTimeRangeBasalDuration(unittest.TestCase):
         expected_duration = (arrow.get('2025-11-18T13:22:40-05:00') - arrow.get('2025-11-18T13:17:40-05:00')).seconds / 60
         self.assertAlmostEqual(basal_2['duration'], expected_duration, places=2)
         self.assertEqual(basal_2['duration'], 5.0)
+
+
+BASAL_JSON_1 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 279, "sequenceGroup": 0, "sequenceNumber": 417004, "pumpDateTime": "2026-05-07T00:01:11", "eventProperties": {"commandedRateSource": 3, "reservedA2": 3, "spareA3": 0, "commandedRate": 1000, "profileBasalRate": 1000, "algorithmRate": 1000, "tempRate": 65535}, "estimatedDateTime": "2026-05-07T00:01:11Z"}
+BASAL_JSON_2 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 279, "sequenceGroup": 0, "sequenceNumber": 417029, "pumpDateTime": "2026-05-07T00:06:12", "eventProperties": {"commandedRateSource": 3, "reservedA2": 0, "spareA3": 0, "commandedRate": 1000, "profileBasalRate": 1000, "algorithmRate": 1000, "tempRate": 65535}, "estimatedDateTime": "2026-05-07T00:06:12Z"}
+
+
+class TestProcessTimeRangeJsonBasal(unittest.TestCase):
+    """Basal delivery events processed via real pump-logs JSON (production path)."""
+    maxDiff = None
+
+    def setUp(self):
+        self.tconnect = TConnectApi()
+        self.tconnect._tandemsource = FakeTandemSourceApi()
+        self.nightscout = NightscoutApi()
+        self.nightscout.last_uploaded_entry = lambda *args, **kwargs: None
+
+        self.secret = build_secrets(
+            FETCH_ALL_EVENT_TYPES=False
+        )
+
+        self.tconnectDevice = {
+            'deviceId': 'test',
+            'maxDateWithEvents': '2026-05-07T00:20:00-04:00'
+        }
+
+        self.process = ProcessTimeRange(
+            self.tconnect,
+            self.nightscout,
+            self.tconnectDevice,
+            pretend=False,
+            secret=self.secret
+        )
+
+        self.tconnect._tandemsource.events = list(Events([dict(BASAL_JSON_1), dict(BASAL_JSON_2)]))
+
+    def test_basal_events_via_json(self):
+        time_start = arrow.get('2026-05-07T00:00:00-04:00')
+        time_end = arrow.get('2026-05-07T00:11:12-04:00')
+
+        count, last_seqnum = self.process.process(time_start, time_end)
+
+        self.assertEqual(count, 2)
+        self.assertEqual(last_seqnum, 417029)
+
+        treatments = self.nightscout.uploaded_entries['treatments']
+        self.assertEqual(len(treatments), 2)
+
+        self.assertDictEqual(treatments[0], {
+            "eventType": "Temp Basal",
+            "reason": "Algorithm",
+            "duration": 5.016666666666667,
+            "absolute": 1.0,
+            "rate": 1.0,
+            "created_at": "2026-05-07 00:01:11-04:00",
+            "carbs": None,
+            "insulin": None,
+            "enteredBy": "Pump (tconnectsync)",
+            "pump_event_id": "417004"
+        })
+
+        self.assertDictEqual(treatments[1], {
+            "eventType": "Temp Basal",
+            "reason": "Algorithm",
+            "duration": None,
+            "absolute": 1.0,
+            "rate": 1.0,
+            "created_at": "2026-05-07 00:06:12-04:00",
+            "carbs": None,
+            "insulin": None,
+            "enteredBy": "Pump (tconnectsync)",
+            "pump_event_id": "417029"
+        })
 
 
 if __name__ == '__main__':
