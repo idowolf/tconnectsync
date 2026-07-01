@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 
+import arrow
 import datetime
 import unittest
 import urllib.parse
 from unittest.mock import patch
 
 from tconnectsync.api.tandemsource import TandemSourceApi
+from tconnectsync.eventparser import events as eventtypes
 
 
 # Representative GET api/reports/bff/pumper/{pumperId} response, mirroring the
@@ -247,6 +249,144 @@ class TestGetPumpLogs(unittest.TestCase):
         today = datetime.datetime.now().strftime('%Y-%m-%d')
         self.assertEqual(qs["startDate"], ["%sT00:00:00Z" % today])
         self.assertEqual(qs["endDate"], ["%sT23:59:59Z" % today])
+
+
+def _ev(group, num, event_code=16, pump_date_time="2024-01-10T08:15:30", **props):
+    """Trimmed real-shape pump-log event; eventCode 16 parses to LidBgReadingTaken."""
+    return {
+        "deviceAssignmentId": "1b493210-9336-4901-a329-a352775738c5",
+        "eventCode": event_code,
+        "sequenceGroup": group,
+        "sequenceNumber": num,
+        "pumpDateTime": pump_date_time,
+        "eventProperties": props or {"iob": 1.25, "bg": 112},
+        "estimatedDateTime": pump_date_time + "Z",
+    }
+
+
+class TestPumpLogWindows(unittest.TestCase):
+    """#10: the range is paged into inclusive windows no larger than 28 days."""
+    maxDiff = None
+
+    def test_single_day(self):
+        self.assertEqual(TandemSourceApi._pump_log_windows("2024-01-01", "2024-01-01"),
+                         [("2024-01-01", "2024-01-01")])
+
+    def test_short_range_is_one_window(self):
+        # A span shorter than the window must still yield a covering window.
+        self.assertEqual(TandemSourceApi._pump_log_windows("2024-01-01", "2024-01-15"),
+                         [("2024-01-01", "2024-01-15")])
+
+    def test_exactly_28_days_is_one_window(self):
+        self.assertEqual(TandemSourceApi._pump_log_windows("2024-01-01", "2024-01-28"),
+                         [("2024-01-01", "2024-01-28")])
+
+    def test_29_days_splits(self):
+        self.assertEqual(TandemSourceApi._pump_log_windows("2024-01-01", "2024-01-29"),
+                         [("2024-01-01", "2024-01-28"), ("2024-01-29", "2024-01-29")])
+
+    def test_long_range_windows_are_contiguous_and_bounded(self):
+        windows = TandemSourceApi._pump_log_windows("2024-01-01", "2024-03-01")
+        self.assertEqual(windows, [
+            ("2024-01-01", "2024-01-28"),
+            ("2024-01-29", "2024-02-25"),
+            ("2024-02-26", "2024-03-01"),
+        ])
+        # each window <= 28 days, and windows are contiguous (no gaps/overlaps)
+        for start, end in windows:
+            self.assertLessEqual((arrow.get(end) - arrow.get(start)).days, 27)
+        for (_, prev_end), (next_start, _) in zip(windows, windows[1:]):
+            self.assertEqual(arrow.get(next_start), arrow.get(prev_end).shift(days=1))
+
+    def test_reversed_dates_are_swapped(self):
+        self.assertEqual(TandemSourceApi._pump_log_windows("2024-03-01", "2024-01-01"),
+                         TandemSourceApi._pump_log_windows("2024-01-01", "2024-03-01"))
+
+    def test_none_dates_default_to_single_today_window(self):
+        windows = TandemSourceApi._pump_log_windows(None, None)
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(windows[0][0], windows[0][1])
+
+
+class TestPumpEvents(unittest.TestCase):
+    """#16: pump_events pages get_pump_logs by window, dedupes, skips
+    clockChanges, and yields parsed event objects."""
+    maxDiff = None
+
+    def _api(self):
+        api = TandemSourceApi.__new__(TandemSourceApi)
+        api.pumperId = "PUMPER123"
+        return api
+
+    def test_single_window_one_call_with_default_event_ids(self):
+        api = self._api()
+        resp = {"events": [_ev(0, 1)], "clockChanges": []}
+        with patch.object(TandemSourceApi, "get_pump_logs", return_value=resp) as m:
+            out = list(api.pump_events("dev-uuid", "2024-01-01", "2024-01-10"))
+        m.assert_called_once_with("dev-uuid", "2024-01-01", "2024-01-10",
+                                  TandemSourceApi.DEFAULT_EVENT_IDS)
+        self.assertEqual([type(e).__name__ for e in out], ["LidBgReadingTaken"])
+
+    def test_fetch_all_event_types_passes_none_filter(self):
+        api = self._api()
+        resp = {"events": [], "clockChanges": []}
+        with patch.object(TandemSourceApi, "get_pump_logs", return_value=resp) as m:
+            list(api.pump_events("dev", "2024-01-01", "2024-01-10", fetch_all_event_types=True))
+        self.assertIsNone(m.call_args.args[3])
+
+    def test_multi_window_paging_boundaries(self):
+        api = self._api()
+        responses = [
+            {"events": [_ev(0, 1)], "clockChanges": []},
+            {"events": [_ev(0, 2)], "clockChanges": []},
+            {"events": [_ev(0, 3)], "clockChanges": []},
+        ]
+        with patch.object(TandemSourceApi, "get_pump_logs", side_effect=responses) as m:
+            out = list(api.pump_events("dev", "2024-01-01", "2024-03-01"))
+        windows = [(c.args[1], c.args[2]) for c in m.call_args_list]
+        self.assertEqual(windows, [
+            ("2024-01-01", "2024-01-28"),
+            ("2024-01-29", "2024-02-25"),
+            ("2024-02-26", "2024-03-01"),
+        ])
+        self.assertEqual([e.seqNum for e in out], [1, 2, 3])
+
+    def test_dedupes_across_windows_by_group_and_number(self):
+        api = self._api()
+        # Same (sequenceGroup, sequenceNumber) appears in two windows -> kept once.
+        responses = [
+            {"events": [_ev(0, 100), _ev(0, 101)], "clockChanges": []},
+            {"events": [_ev(0, 100), _ev(0, 102)], "clockChanges": []},
+        ]
+        with patch.object(TandemSourceApi, "get_pump_logs", side_effect=responses):
+            out = list(api.pump_events("dev", "2024-01-01", "2024-02-15"))
+        self.assertEqual([e.seqNum for e in out], [100, 101, 102])
+
+    def test_same_number_different_group_not_deduped(self):
+        api = self._api()
+        responses = [
+            {"events": [_ev(0, 100)], "clockChanges": []},
+            {"events": [_ev(1, 100)], "clockChanges": []},
+        ]
+        with patch.object(TandemSourceApi, "get_pump_logs", side_effect=responses):
+            out = list(api.pump_events("dev", "2024-01-01", "2024-02-15"))
+        self.assertEqual(len(out), 2)
+
+    def test_clock_changes_are_skipped(self):
+        api = self._api()
+        resp = {
+            "events": [_ev(0, 1)],
+            "clockChanges": [_ev(0, 5, event_code=13), _ev(0, 6, event_code=14)],
+        }
+        with patch.object(TandemSourceApi, "get_pump_logs", return_value=resp):
+            out = list(api.pump_events("dev", "2024-01-01", "2024-01-10"))
+        self.assertEqual([e.eventId for e in out], [16])
+
+    def test_missing_events_key_is_tolerated(self):
+        api = self._api()
+        with patch.object(TandemSourceApi, "get_pump_logs", return_value={}):
+            out = list(api.pump_events("dev", "2024-01-01", "2024-01-10"))
+        self.assertEqual(out, [])
 
 
 if __name__ == "__main__":

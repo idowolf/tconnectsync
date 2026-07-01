@@ -9,7 +9,7 @@ import os
 import jwt
 import pickle
 
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 try:
     from typing import TypedDict
 except ImportError:  # Python 3.7
@@ -25,40 +25,9 @@ from jwt.algorithms import RSAAlgorithm
 from ..util import timeago, cap_length
 from .common import parse_ymd_date, base_headers, base_session, ApiException, ApiLoginException
 from ..secret import CACHE_CREDENTIALS, CACHE_CREDENTIALS_PATH
-from ..eventparser.generic import Events, decode_raw_events, EVENT_LEN
+from ..eventparser.generic import Events_from_json
 
 logger = logging.getLogger(__name__)
-
-
-class LastUpload(TypedDict, total=False):
-    """The 'lastUpload' object within a PumpEventMetadata entry.
-
-    'settings' is the raw pump settings blob consumed by
-    tconnectsync.domain.tandemsource.pump_settings.PumpSettings.from_dict().
-    """
-    settings: dict
-
-
-class PumpEventMetadata(TypedDict):
-    """One entry returned by TandemSourceApi.pump_event_metadata().
-
-    Field names mirror the JSON returned by the
-    api/reports/reportsfacade/{pumperId}/pumpeventmetadata endpoint.
-    The *DateWithEvents fields are ISO-8601 datetime strings (parsed via
-    arrow.get()); tconnectDeviceId and serialNumber are numeric-looking
-    strings.
-    """
-    tconnectDeviceId: str
-    serialNumber: str
-    modelNumber: str
-    minDateWithEvents: str
-    maxDateWithEvents: str
-    lastUpload: LastUpload
-    patientName: str
-    patientDateOfBirth: str
-    patientCareGiver: str
-    softwareVersion: str
-    partNumber: str
 
 
 class JwtClaims(TypedDict, total=False):
@@ -150,7 +119,7 @@ class BffPumper(TypedDict, total=False):
 class PumpMetadata(TypedDict, total=False):
     """Normalized per-pump metadata the sync code consumes, adapted from a
     BffPump (see TandemSourceApi.pump_metadata()). This is the stable
-    replacement for the old reportsfacade PumpEventMetadata shape.
+    replacement for the old reportsfacade pump-event-metadata shape.
 
     deviceId is the UUID assignmentId used as the pump-logs path segment (it
     replaces the old numeric tconnectDeviceId). date fields are ISO-8601
@@ -599,21 +568,12 @@ class TandemSourceApi:
     def pumper_info(self) -> Any:
         return self.get('api/pumpers/pumpers/%s' % (self.pumperId), {})
 
-    """
-    Returns metadata for pump events. Returns a list of dict's per-pump on the account.
-    [
-        {'tconnectDeviceId', 'serialNumber', 'modelNumber', 'minDateWithEvents', 'maxDateWithEvents', 'lastUpload', 'patientName', 'patientDateOfBirth', 'patientCareGiver', 'softwareVersion', 'partNumber'},
-    ]
-    """
-    def pump_event_metadata(self) -> List[PumpEventMetadata]:
-        return self.get('api/reports/reportsfacade/%s/pumpeventmetadata' % (self.pumperId), {})
-
     def get_pumper(self) -> BffPumper:
         """Returns the pumper's profile plus the list of pumps on the account
-        (BffPumper.pumps) from the new BFF endpoint. Replaces
-        pump_event_metadata(): pumps[].assignmentId is the UUID device id used
-        by the pump-logs endpoint, and pumps[].settings.details carries the
-        pump settings blob."""
+        (BffPumper.pumps) from the new BFF endpoint. Replaces the old
+        reportsfacade pump-event-metadata endpoint: pumps[].assignmentId is the
+        UUID device id used by the pump-logs endpoint, and
+        pumps[].settings.details carries the pump settings blob."""
         return self.get('api/reports/bff/pumper/%s' % (self.pumperId), {})
 
     @staticmethod
@@ -636,7 +596,7 @@ class TandemSourceApi:
 
     def pump_metadata(self) -> List[PumpMetadata]:
         """Normalized device list adapted from get_pumper(). This is the
-        BFF-backed replacement for pump_event_metadata()."""
+        BFF-backed replacement for the old reportsfacade pump-event-metadata."""
         pumper = self.get_pumper()
         return [self._bff_pump_to_metadata(p) for p in pumper.get('pumps', [])]
 
@@ -662,39 +622,55 @@ class TandemSourceApi:
         })
         return self.get('api/reports/bff/pump-logs/%s?%s' % (device_id, query), {})
 
-    """
-    Returns raw unparsed string for pump events.
-    tconnect_device_id is the device id from pump_metadata() (deviceId).
-    """
-    def pump_events_raw(self, tconnect_device_id: str, min_date: Optional[str] = None, max_date: Optional[str] = None, event_ids_filter: Optional[List[int]] = DEFAULT_EVENT_IDS) -> str:
-        minDate = parse_ymd_date(min_date)
-        maxDate = parse_ymd_date(max_date)
-        logger.debug(f'pump_events_raw({tconnect_device_id}, {minDate}, {maxDate})')
+    # The pump-logs endpoint caps each request at roughly four weeks, so a
+    # longer range is paged in windows no larger than this.
+    PUMP_LOGS_WINDOW_DAYS = 28
 
-        eventIdsFilter = '%2C'.join(map(str, event_ids_filter)) if event_ids_filter else None
-        return self.get('api/reports/reportsfacade/pumpevents/%s/%s?minDate=%s&maxDate=%s%s' % (
-            self.pumperId,
-            tconnect_device_id,
-            minDate,
-            maxDate,
-            '&eventIds=%s' % eventIdsFilter if eventIdsFilter else ''
-        ), {})
+    @classmethod
+    def _pump_log_windows(cls, min_date: Optional[str], max_date: Optional[str]) -> List[Tuple[str, str]]:
+        """Split the (min_date, max_date) range into inclusive date windows no
+        larger than PUMP_LOGS_WINDOW_DAYS. A None bound defaults to today (via
+        parse_ymd_date), so an unset range yields a single one-day window."""
+        start = arrow.get(parse_ymd_date(min_date))
+        end = arrow.get(parse_ymd_date(max_date))
+        if end < start:
+            start, end = end, start
+
+        windows = []
+        cur = start
+        while cur <= end:
+            win_end = min(cur.shift(days=cls.PUMP_LOGS_WINDOW_DAYS - 1), end)
+            windows.append((cur.format('YYYY-MM-DD'), win_end.format('YYYY-MM-DD')))
+            cur = win_end.shift(days=1)
+        return windows
 
     """
-    Fetch and decode pump events using eventparser.
-    Default of fetch_all_events=False will filter to the same eventids used in the Tandem Source backend.
-    If fetch_all_events=True, then all event types from the history log will be returned.
+    Fetch and parse pump events from the pump-logs endpoint.
+    Default of fetch_all_event_types=False will filter to the same event ids used in the Tandem Source backend.
+    If fetch_all_event_types=True, then all event types from the history log will be returned.
+    tconnect_device_id is the UUID assignmentId from pump_metadata() (deviceId).
     """
     def pump_events(self, tconnect_device_id: str, min_date: Optional[str] = None, max_date: Optional[str] = None, fetch_all_event_types: bool = False) -> Iterator:
-        pump_events_raw = self.pump_events_raw(
-            tconnect_device_id,
-            min_date,
-            max_date,
-            event_ids_filter=None if fetch_all_event_types else self.DEFAULT_EVENT_IDS
-        )
+        event_ids_filter = None if fetch_all_event_types else self.DEFAULT_EVENT_IDS
 
-        pump_events_decoded = decode_raw_events(pump_events_raw)
-        logger.info(f"Read {len(pump_events_decoded)} bytes (est. {len(pump_events_decoded)/EVENT_LEN} events)")
-        return Events(pump_events_decoded)
+        # Page across date windows, deduplicating events that appear in more
+        # than one window by their (sequenceGroup, sequenceNumber) identity.
+        seen = set()
+        events = []
+        clock_change_count = 0
+        for window_start, window_end in self._pump_log_windows(min_date, max_date):
+            resp = self.get_pump_logs(tconnect_device_id, window_start, window_end, event_ids_filter)
+            clock_change_count += len(resp.get('clockChanges') or [])
+            for event in resp.get('events') or []:
+                key = (event.get('sequenceGroup'), event.get('sequenceNumber'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                events.append(event)
+
+        # clockChanges (LID_TIME_CHANGED/LID_DATE_CHANGED) are not consumed by any
+        # processor, so they are counted for visibility but not parsed.
+        logger.info(f"Read {len(events)} events ({clock_change_count} clock changes skipped)")
+        return Events_from_json(events)
 
 
