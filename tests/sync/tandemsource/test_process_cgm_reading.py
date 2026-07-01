@@ -5,7 +5,7 @@ import arrow
 
 from tconnectsync.sync.tandemsource.process_cgm_reading import ProcessCGMReading
 from tconnectsync.eventparser import events as eventtypes
-from tconnectsync.eventparser.generic import Event
+from tconnectsync.eventparser.generic import Event, Events_from_json
 
 from ...api.fake import TConnectApi
 from ...nightscout_fake import NightscoutApi
@@ -417,5 +417,52 @@ class TestProcessCGMReadingFSL3(unittest.TestCase):
 
         self.assertEqual(type(events[0]), eventtypes.LidCgmJoinSessionFsl3)
         self.assertEqual(events[0].seqNum, 749962)
+
+
+# Real LID_CGM_DATA_G7 pump-logs JSON events captured from a live Mobi account
+# (deviceAssignmentId redacted). These exercise the production path
+# (Events_from_json -> ProcessCGMReading) rather than the binary decoder.
+G7_JSON_1 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 484329, "pumpDateTime": "2026-05-26T00:04:12", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -3, "algorithmState": 32, "rssi": -82, "currentGlucoseDisplayValue": 347, "egvTimeStamp": 580608249, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-26T00:04:12Z"}
+G7_JSON_2 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 484338, "pumpDateTime": "2026-05-26T00:09:12", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -4, "algorithmState": 32, "rssi": -84, "currentGlucoseDisplayValue": 345, "egvTimeStamp": 580608548, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-26T00:09:12Z"}
+G7_JSON_3 = {"deviceAssignmentId": "00000000-0000-0000-0000-000000000000", "eventCode": 399, "sequenceGroup": 0, "sequenceNumber": 484351, "pumpDateTime": "2026-05-26T00:14:12", "eventProperties": {"glucoseValueStatus": 0, "cgmDataType": [0], "rate": -4, "algorithmState": 32, "rssi": -78, "currentGlucoseDisplayValue": 341, "egvTimeStamp": 580608849, "egvInfoBitmask": [0, 5, 6, 7, 8, 11, 12], "interval": 0, "reservedD15": 0}, "estimatedDateTime": "2026-05-26T00:14:12Z"}
+
+
+class TestProcessCGMReadingG7Json(unittest.TestCase):
+    """Same processor exercised via real pump-logs JSON (production path)."""
+    maxDiff = None
+
+    def setUp(self):
+        self.tconnect = TConnectApi()
+        self.nightscout = NightscoutApi()
+        self.nightscout.last_uploaded_bg_entry = lambda *args, **kwargs: None
+        self.process = ProcessCGMReading(self.tconnect, self.nightscout, 'abcdef', pretend=False, timezone='America/New_York')
+
+    def test_single_g7_json_reading(self):
+        events = list(Events_from_json([dict(G7_JSON_1)]))
+        self.assertEqual(type(events[0]), eventtypes.LidCgmDataG7)
+        self.assertEqual(events[0].currentglucosedisplayvalue, 347)
+        self.assertEqual(events[0].egvTimestamp, 580608249)
+
+        p = self.process.process(events, time_start=None, time_end=None)
+        self.assertEqual(len(p), 1)
+        self.assertEqual(p[0]['sgv'], 347)
+        # created_at is derived from egvTimeStamp (3s before pumpDateTime here)
+        self.assertEqual(p[0]['dateString'], '2026-05-26T00:04:09-0400')
+        self.assertEqual(p[0]['pump_event_id'], '484329')
+
+    def test_multiple_g7_json_readings(self):
+        events = list(Events_from_json([dict(G7_JSON_1), dict(G7_JSON_2), dict(G7_JSON_3)]))
+        p = self.process.process(events, time_start=None, time_end=None)
+        self.assertEqual([e['sgv'] for e in p], [347, 345, 341])
+        self.assertEqual([e['pump_event_id'] for e in p], ['484329', '484338', '484351'])
+
+    def test_skips_readings_at_or_before_last_upload(self):
+        # Only readings strictly after the last Nightscout upload are returned.
+        self.nightscout.last_uploaded_bg_entry = lambda *args, **kwargs: {'dateString': '2026-05-26T00:09:08-0400'}
+        events = list(Events_from_json([dict(G7_JSON_1), dict(G7_JSON_2), dict(G7_JSON_3)]))
+        p = self.process.process(events, time_start=None, time_end=None)
+        self.assertEqual([e['sgv'] for e in p], [341])
+
+
 if __name__ == '__main__':
     unittest.main()
