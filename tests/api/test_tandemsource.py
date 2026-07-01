@@ -7,6 +7,7 @@ import urllib.parse
 from unittest.mock import patch
 
 from tconnectsync.api.tandemsource import TandemSourceApi
+from tconnectsync.api.common import ApiException
 from tconnectsync.eventparser import events as eventtypes
 
 
@@ -387,6 +388,59 @@ class TestPumpEvents(unittest.TestCase):
         with patch.object(TandemSourceApi, "get_pump_logs", return_value={}):
             out = list(api.pump_events("dev", "2024-01-01", "2024-01-10"))
         self.assertEqual(out, [])
+
+
+class TestGetRetry(unittest.TestCase):
+    """get() retries once on 500, re-logs-in and retries once on 401, and
+    raises immediately on other statuses; after one retry it gives up."""
+    maxDiff = None
+
+    def _api(self):
+        api = TandemSourceApi.__new__(TandemSourceApi)
+        api._email = 'e'
+        api._password = 'p'
+        api.accessTokenExpiresAt = 0
+        return api
+
+    def test_401_triggers_relogin_then_retry_succeeds(self):
+        api = self._api()
+        with patch.object(TandemSourceApi, "_get",
+                          side_effect=[ApiException(401, 'unauth'), {'ok': True}]) as m_get, \
+             patch.object(TandemSourceApi, "login", return_value=None) as m_login:
+            result = api.get('ep', {})
+        self.assertEqual(result, {'ok': True})
+        self.assertEqual(m_login.call_count, 1)
+        self.assertEqual(m_get.call_count, 2)
+
+    def test_500_retries_without_relogin(self):
+        api = self._api()
+        with patch.object(TandemSourceApi, "_get",
+                          side_effect=[ApiException(500, 'err'), {'ok': True}]) as m_get, \
+             patch.object(TandemSourceApi, "login", return_value=None) as m_login:
+            result = api.get('ep', {})
+        self.assertEqual(result, {'ok': True})
+        self.assertEqual(m_login.call_count, 0)
+        self.assertEqual(m_get.call_count, 2)
+
+    def test_other_status_raises_immediately(self):
+        api = self._api()
+        with patch.object(TandemSourceApi, "_get",
+                          side_effect=ApiException(403, 'forbidden')) as m_get, \
+             patch.object(TandemSourceApi, "login", return_value=None) as m_login:
+            with self.assertRaises(ApiException):
+                api.get('ep', {})
+        self.assertEqual(m_login.call_count, 0)
+        self.assertEqual(m_get.call_count, 1)
+
+    def test_persistent_401_raises_after_one_retry(self):
+        api = self._api()
+        with patch.object(TandemSourceApi, "_get",
+                          side_effect=[ApiException(401, 'unauth'), ApiException(401, 'unauth')]) as m_get, \
+             patch.object(TandemSourceApi, "login", return_value=None) as m_login:
+            with self.assertRaises(ApiException):
+                api.get('ep', {})
+        self.assertEqual(m_login.call_count, 1)
+        self.assertEqual(m_get.call_count, 2)
 
 
 if __name__ == "__main__":
