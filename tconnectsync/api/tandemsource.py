@@ -487,7 +487,9 @@ class TandemSourceApi:
     def pump_event_metadata(self) -> List[PumpEventMetadata]:
         return self.get('api/reports/reportsfacade/%s/pumpeventmetadata' % (self.pumperId), {})
 
-    DEFAULT_EVENT_IDS: List[int] = [229,5,28,4,26,99,279,3,16,59,21,55,20,280,64,65,66,61,33,371,171,369,460,172,370,461,372,399,256,213,406,394,212,404,214,405,447,313,60,14,6,90,230,140,12,11,53,13,63,203,307,191]
+    # Matches the Tandem Source web app's getLogIDList() (55 IDs) as observed in
+    # the live GET api/reports/bff/pump-logs request. Includes FSL3 ids 477/480/486.
+    DEFAULT_EVENT_IDS: List[int] = [229,5,28,4,26,99,279,3,16,59,21,55,20,280,64,65,66,61,33,371,171,369,460,172,370,461,372,480,399,256,213,406,477,394,212,404,214,405,486,447,313,60,14,6,90,230,140,12,11,53,13,63,203,307,191]
 
     """
     Returns raw unparsed string for pump events
