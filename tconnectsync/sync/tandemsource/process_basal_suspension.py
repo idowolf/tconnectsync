@@ -31,7 +31,7 @@ class ProcessBasalSuspension:
         logger.debug("ProcessBasalSuspension: querying for last uploaded suspension")
         
         if UPLOAD_DESTINATION == 'tidepool':
-            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end)
+            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end, subtype='status', status='suspended')
             last_upload_time = None
             if last_upload:
                 last_upload_time = arrow.get(last_upload["time"])

@@ -62,19 +62,18 @@ class ProcessBasal:
             with_duration[i][1] = with_duration[i+1][0] - with_duration[i][0]
 
         # For the last basal, we need to determine its duration
-        # For Tidepool: Use a generous duration to avoid gaps between sync periods
+        # For Tidepool: skip the still-open segment; its true duration is only
+        #   known once the next basal event arrives. Since it was never uploaded,
+        #   it stays after the last-upload time and is picked up on the next sync.
+        #   Uploading it with a guessed duration would fabricate delivery data and
+        #   create overlapping basal records on subsequent syncs.
         # For Nightscout: Truncate at time_end (original behavior)
         if UPLOAD_DESTINATION == 'tidepool':
-            # Extend last basal to end of day or 24 hours, whichever is longer
-            # This prevents gaps when syncing consecutive date ranges
-            last_basal_start = with_duration[-1][0]
-            end_of_day = last_basal_start.ceil('day')  # Round up to end of day
-            duration_to_end_of_day = end_of_day - last_basal_start
-            duration_to_time_end = time_end - last_basal_start
-            
-            # Use the longer duration to ensure continuity
-            with_duration[-1][1] = max(duration_to_end_of_day, duration_to_time_end)
-            logger.debug("Last basal duration set to %s (extends to end of day to avoid gaps)" % with_duration[-1][1])
+            skipped = with_duration.pop()
+            logger.info("Skipping still-open basal segment starting %s; it will sync once its end is known" % skipped[0])
+            if not with_duration:
+                logger.info("No completed basal events found to process")
+                return []
         else:
             with_duration[-1][1] = time_end - with_duration[-1][0]
 
@@ -137,7 +136,7 @@ class ProcessBasal:
                 return None
             return TidepoolEntry.basal(
                 value = value,
-                duration_mins = duration.seconds / 60,
+                duration_mins = duration.total_seconds() / 60,
                 created_at = start.format(),
                 reason = ', '.join(bitmask_to_list(event.changetype)),
                 pump_event_id = "%s" % event.seqNum
@@ -149,7 +148,7 @@ class ProcessBasal:
                 return None
             return TidepoolEntry.basal(
                 value = value,
-                duration_mins = duration.seconds / 60,
+                duration_mins = duration.total_seconds() / 60,
                 created_at = start.format(),
                 reason = ', '.join(bitmask_to_list(event.commandedRateSource)),
                 pump_event_id = "%s" % event.seqNum
@@ -166,7 +165,7 @@ class ProcessBasal:
                 return None
             return NightscoutEntry.basal(
                 value = value,
-                duration_mins = duration.seconds / 60,
+                duration_mins = duration.total_seconds() / 60,
                 created_at = start.format(),
                 reason = ', '.join(bitmask_to_list(event.changetype)),
                 pump_event_id = "%s" % event.seqNum
@@ -178,7 +177,7 @@ class ProcessBasal:
                 return None
             return NightscoutEntry.basal(
                 value = value,
-                duration_mins = duration.seconds / 60,
+                duration_mins = duration.total_seconds() / 60,
                 created_at = start.format(),
                 reason = ', '.join(bitmask_to_list(event.commandedRateSource)),
                 pump_event_id = "%s" % event.seqNum

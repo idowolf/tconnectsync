@@ -31,7 +31,7 @@ class ProcessCGMAlert:
         logger.debug("ProcessCGMAlert: querying for last uploaded entry")
         
         if UPLOAD_DESTINATION == 'tidepool':
-            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end)
+            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end, subtype='alarm', annotation_code='tconnectsync/cgm-alert')
             last_upload_time = None
             if last_upload:
                 last_upload_time = arrow.get(last_upload["time"])

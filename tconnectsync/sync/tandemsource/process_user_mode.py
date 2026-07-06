@@ -32,10 +32,10 @@ class ProcessUserMode:
 
     def process(self, events, time_start, time_end):
         if UPLOAD_DESTINATION == 'tidepool':
-            # For Tidepool, we might need to query deviceEvent for exercise/sleep modes
-            # This is a simplified approach - Tidepool may store these differently
-            logger.debug("ProcessUserMode: querying for last uploaded deviceEvent (exercise/sleep)")
-            exercise_last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end)
+            # Exercise/sleep modes are uploaded to Tidepool as physicalActivity,
+            # so deduplication must query that same type
+            logger.debug("ProcessUserMode: querying for last uploaded physicalActivity (exercise/sleep)")
+            exercise_last_upload = self.upload_api.last_uploaded_entry('physicalActivity', time_start=time_start, time_end=time_end)
             exercise_last_upload_time = None
             if exercise_last_upload:
                 exercise_last_upload_time = arrow.get(exercise_last_upload["time"])
@@ -126,11 +126,19 @@ class ProcessUserMode:
                 logger.warning("ProcessUserMode: not sure how to process event: %s" % event)
 
         if start_sleep:
-            processed_sleep.append((start_sleep, None))
-            logger.info("ProcessUserMode: sleep is active")
+            if UPLOAD_DESTINATION == 'tidepool':
+                # Tidepool records cannot be updated later like Nightscout treatments,
+                # so skip the in-progress activity; it will sync once it has ended.
+                logger.info("ProcessUserMode: sleep is active; skipping until ended (started %s)" % start_sleep.eventTimestamp)
+            else:
+                processed_sleep.append((start_sleep, None))
+                logger.info("ProcessUserMode: sleep is active")
         if start_exercise:
-            processed_exercise.append((start_exercise, None))
-            logger.info("ProcessUserMode: exercise is active")
+            if UPLOAD_DESTINATION == 'tidepool':
+                logger.info("ProcessUserMode: exercise is active; skipping until ended (started %s)" % start_exercise.eventTimestamp)
+            else:
+                processed_exercise.append((start_exercise, None))
+                logger.info("ProcessUserMode: exercise is active")
 
         for items in processed_sleep:
             upload_entries.append(self.sleep_to_entry(start=items[0], stop=items[1], time_end=time_end))
@@ -186,7 +194,7 @@ class ProcessUserMode:
             elif start.activesleepschedule:
                 reason = "Sleep (Scheduled)"
 
-            duration_mins = (stop.eventTimestamp - start.eventTimestamp).seconds / 60
+            duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
             return TidepoolEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason,
@@ -201,7 +209,7 @@ class ProcessUserMode:
             elif start.activesleepscheduleRaw:
                 reason = "Sleep (Scheduled)"
 
-            duration_mins = (time_end - start.eventTimestamp).seconds / 60
+            duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
             return TidepoolEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason + " - " + NOT_ENDED if reason else NOT_ENDED,
@@ -218,7 +226,7 @@ class ProcessUserMode:
             elif start.activesleepschedule:
                 reason = "Sleep (Scheduled)"
 
-            duration_mins = (stop.eventTimestamp - start.eventTimestamp).seconds / 60
+            duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
             return NightscoutEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason,
@@ -233,7 +241,7 @@ class ProcessUserMode:
             elif start.activesleepscheduleRaw:
                 reason = "Sleep (Scheduled)"
 
-            duration_mins = (time_end - start.eventTimestamp).seconds / 60
+            duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
             return NightscoutEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason + " - " + NOT_ENDED if reason else NOT_ENDED,
@@ -252,7 +260,7 @@ class ProcessUserMode:
             if stop.exercisestoppedbytimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
                 reason += " (Stopped by timer)"
 
-            duration_mins = (stop.eventTimestamp - start.eventTimestamp).seconds / 60
+            duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
             return TidepoolEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason,
@@ -265,7 +273,7 @@ class ProcessUserMode:
             if start.exercisechoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
                 reason = "Exercise (Timed)"
 
-            duration_mins = (time_end - start.eventTimestamp).seconds / 60
+            duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
             return TidepoolEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason + " - " + NOT_ENDED,
@@ -283,7 +291,7 @@ class ProcessUserMode:
             if stop.exercisestoppedbytimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
                 reason += " (Stopped by timer)"
 
-            duration_mins = (stop.eventTimestamp - start.eventTimestamp).seconds / 60
+            duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
             return NightscoutEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason,
@@ -296,7 +304,7 @@ class ProcessUserMode:
             if start.exercisechoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
                 reason = "Exercise (Timed)"
 
-            duration_mins = (time_end - start.eventTimestamp).seconds / 60
+            duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
             return NightscoutEntry.activity(
                 created_at=start.eventTimestamp.format(),
                 reason=reason + " - " + NOT_ENDED,
@@ -312,7 +320,7 @@ class ProcessUserMode:
         else:
             self.upload_api.delete_entry('treatments/%s' % sleep_last_upload["_id"])
 
-        duration_mins = (event.eventTimestamp - arrow.get(sleep_last_upload["created_at"])).seconds / 60
+        duration_mins = (event.eventTimestamp - arrow.get(sleep_last_upload["created_at"])).total_seconds() / 60
         return NightscoutEntry.activity(
             created_at=sleep_last_upload["created_at"],
             reason=sleep_last_upload["reason"].replace(" - %s" % NOT_ENDED, ""),
@@ -332,7 +340,7 @@ class ProcessUserMode:
         if event.exercisestoppedbytimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
             reason += " (Stopped by timer)"
 
-        duration_mins = (event.eventTimestamp - arrow.get(exercise_last_upload["created_at"])).seconds / 60
+        duration_mins = (event.eventTimestamp - arrow.get(exercise_last_upload["created_at"])).total_seconds() / 60
         return NightscoutEntry.activity(
             created_at=exercise_last_upload["created_at"],
             reason=reason,

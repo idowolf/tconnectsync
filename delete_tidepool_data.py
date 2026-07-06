@@ -93,31 +93,62 @@ def fetch_all_data(base_url, session_token, user_id):
     
     return data
 
-def delete_all_data_sources(external_url, session_token, user_id):
-    """Delete all data sources for the user (most efficient method)."""
-    print(f"\nDeleting all data sources for user {user_id}...")
-    print(f"Using external API: {external_url}")
-    
-    url = f"{external_url}/v1/users/{user_id}/data_sources"
-    headers = get_headers(session_token)
-    headers['Accept'] = 'application/json'
-    
-    print(f"DELETE {url}")
-    response = requests.delete(url, headers=headers)
-    
-    if response.status_code in [200, 202, 204]:
-        print(f"✓ Successfully deleted all data sources!")
-        print(f"  Response: {response.status_code}")
-        try:
-            result = response.json()
-            print(f"  Details: {result}")
-        except:
-            pass
-        return True
-    else:
-        print(f"✗ Failed to delete data sources: {response.status_code}")
-        print(f"  Response: {response.text[:200]}")
-        return False
+def delete_by_upload_id(base_url, session_token, user_id, data_points):
+    """
+    Delete data per uploadId via DELETE /v1/data_sets/{uploadId}.
+
+    Data uploaded through the legacy jellyfish endpoint (POST /data/{userId})
+    uses ad-hoc uploadId strings with no registered data set, so the delete
+    endpoint can't find them. The trick: first POST a matching `type: upload`
+    record carrying the same uploadId (jellyfish stores it in the
+    deviceDataSets collection), then DELETE /v1/data_sets/{uploadId}
+    hard-deletes every record with that uploadId.
+    """
+    upload_ids = sorted(set(
+        item['uploadId'] for item in data_points
+        if item.get('uploadId') and item.get('type') != 'upload'
+    ))
+    print(f"\nDeleting {len(upload_ids)} data sets (grouped by uploadId)...")
+
+    ok = 0
+    failed = 0
+    for i, upload_id in enumerate(upload_ids):
+        # Register an upload record so the data set exists for this uploadId.
+        # The time must be unique per record (uploads dedupe on type+deviceId+time).
+        upload_record = {
+            "type": "upload",
+            "time": f"2020-02-01T00:{i % 60:02d}:{i // 60:02d}Z",
+            "deviceTime": f"2020-02-01T00:{i % 60:02d}:{i // 60:02d}",
+            "deviceId": "TConnectSync-TandemPump",
+            "uploadId": upload_id,
+            "computerTime": f"2020-02-01T00:{i % 60:02d}:{i // 60:02d}",
+            "timezone": "UTC",
+            "timeProcessing": "none",
+            "byUser": user_id,
+            "deviceTags": ["insulin-pump"],
+            "deviceManufacturers": ["Tandem"],
+            "deviceModel": "t:slim X2",
+            "deviceSerialNumber": "TConnectSync",
+            "version": "1.0.0-tconnectsync-cleanup",
+        }
+        r = requests.post(f"{base_url}/data/{user_id}", headers=get_headers(session_token),
+                          json=[upload_record])
+        if r.status_code not in (200, 201):
+            print(f"  ✗ {upload_id}: failed to register upload record: {r.status_code} {r.text[:150]}")
+            failed += 1
+            continue
+
+        r = requests.delete(f"{base_url}/v1/data_sets/{upload_id}",
+                            headers=get_headers(session_token))
+        if r.status_code in (200, 202, 204):
+            print(f"  ✓ {upload_id}: deleted")
+            ok += 1
+        else:
+            print(f"  ✗ {upload_id}: delete failed: {r.status_code} {r.text[:150]}")
+            failed += 1
+
+    print(f"\nData set deletion complete: {ok} deleted, {failed} failed")
+    return failed == 0
 
 def delete_data_individually(base_url, session_token, user_id, data_points):
     """Delete data points individually (fallback method)."""
@@ -223,8 +254,8 @@ def main():
                 print("\n✗ Deletion cancelled.")
                 sys.exit(0)
         
-        # Delete all data sources (most efficient method)
-        success = delete_all_data_sources(external_url, session_token, user_id)
+        # Delete data grouped by uploadId (the only client-side method that works)
+        success = delete_by_upload_id(base_url, session_token, user_id, data_points)
         
         if success:
             print("\n" + "=" * 70)

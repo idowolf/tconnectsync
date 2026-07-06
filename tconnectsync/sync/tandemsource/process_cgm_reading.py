@@ -13,7 +13,7 @@ from ...parser.nightscout import (
     NightscoutEntry
 )
 from ...parser.tidepool import TidepoolEntry
-from ...secret import UPLOAD_DESTINATION
+from ...secret import UPLOAD_DESTINATION, TIMEZONE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +33,13 @@ class ProcessCGMReading:
         
         # Query for last upload based on destination
         if UPLOAD_DESTINATION == 'tidepool':
-            last_upload = self.upload_api.last_uploaded_bg_entry(time_start=time_start, time_end=time_end)
+            # Only look at cbg (CGM) entries: smbg entries come from bolus BG
+            # readings and would wrongly mask not-yet-uploaded CGM history.
+            last_upload = self.upload_api.last_uploaded_entry('cbg', time_start=time_start, time_end=time_end)
             last_upload_time = None
             if last_upload:
                 last_upload_time = arrow.get(last_upload["time"])
-            logger.info("ProcessCGMReading: Last Tidepool bg upload: %s" % last_upload_time)
+            logger.info("ProcessCGMReading: Last Tidepool cbg upload: %s" % last_upload_time)
         else:
             last_upload = self.upload_api.last_uploaded_bg_entry(time_start=time_start, time_end=time_end)
             last_upload_time = None
@@ -54,6 +56,12 @@ class ProcessCGMReading:
                     logger.info("ProcessCGMReading: Skipping %s not after last upload time: %s (time range: %s - %s)" % (type(event), event, time_start, time_end))
                 continue
 
+            # Out-of-range (high/low) readings report a display value of 0,
+            # which must not be uploaded as an actual glucose value
+            if not event.currentglucosedisplayvalue or event.currentglucosedisplayvalue <= 0:
+                logger.info("ProcessCGMReading: Skipping out-of-range/empty CGM reading: %s" % event)
+                continue
+
             readings.append(event)
 
         upload_entries = []
@@ -65,24 +73,35 @@ class ProcessCGMReading:
     def write(self, upload_entries):
         count = 0
         destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
-        for entry in upload_entries:
-            if self.pretend:
-                logger.info("Would upload to %s: %s" % (destination, entry))
-            else:
-                logger.info("Uploading to %s: %s" % (destination, entry))
-                if UPLOAD_DESTINATION == 'tidepool':
-                    self.upload_api.upload_entry(entry)
+
+        if UPLOAD_DESTINATION == 'tidepool':
+            # Upload CGM readings in a single batch; a backfill can contain
+            # hundreds of readings and per-entry requests are slow.
+            if upload_entries:
+                if self.pretend:
+                    for entry in upload_entries:
+                        logger.info("Would upload to %s: %s" % (destination, entry))
                 else:
+                    logger.info("Uploading %d CGM readings to Tidepool in batch..." % len(upload_entries))
+                    self.upload_api.upload_entries(upload_entries)
+                count = len(upload_entries)
+        else:
+            for entry in upload_entries:
+                if self.pretend:
+                    logger.info("Would upload to %s: %s" % (destination, entry))
+                else:
+                    logger.info("Uploading to %s: %s" % (destination, entry))
                     self.upload_api.upload_entry(entry, entity='entries')
-            count += 1
+                count += 1
 
         return count
 
     def timestamp_for(self, event):
         # For backfills the time the event was added to the pump's event store
-        # might not be the time it actually occurred, so we use the egvTimestamp
-        return arrow.get(TANDEM_EPOCH + event.egvTimestamp)
+        # might not be the time it actually occurred, so we use the egvTimestamp.
+        # Like all pump event timestamps, egvTimestamp is in the pump's local
+        # wall-clock time, not UTC (see RawEvent.timestamp).
+        return arrow.get(TANDEM_EPOCH + event.egvTimestamp, tzinfo='UTC').replace(tzinfo=TIMEZONE_NAME)
 
     def to_entry(self, event):
         """

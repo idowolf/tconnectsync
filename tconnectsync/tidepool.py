@@ -122,46 +122,64 @@ class TidepoolApi:
         """
         return self.upload_entries([tidepool_entry])
     
-    def last_uploaded_entry(self, entry_type, time_start=None, time_end=None):
+    def last_uploaded_entry(self, entry_type, time_start=None, time_end=None, subtype=None, status=None, annotation_code=None):
         """
         Get the most recent uploaded entry of a specific type.
-        
+
         Args:
             entry_type: The Tidepool data type (e.g., 'bolus', 'basal')
             time_start: Start time filter
             time_end: End time filter
-            
+            subtype: Only consider entries with this subType (e.g. 'alarm').
+                Several processors share the 'deviceEvent' type; without this
+                filter one processor's uploads would mask another's events.
+            status: Only consider entries with this status (e.g. 'suspended')
+            annotation_code: Only consider entries carrying an annotation with
+                this code (e.g. 'tconnectsync/cgm-alert')
+
         Returns:
-            The most recent entry dict or None
+            The most recent matching entry dict or None
         """
         try:
             url = f"{self.base_url}/data/{self.user_id}"
-            
+
             params = {
                 'type': entry_type
             }
-            
+
             if time_start:
                 params['startDate'] = format_datetime(time_start)
             if time_end:
                 params['endDate'] = format_datetime(time_end)
-            
+
             response = requests.get(
                 url,
                 headers=self._get_headers(),
                 params=params
             )
-            
+
             if response.status_code != 200:
                 logger.warning(f"Tidepool last_uploaded_entry {entry_type} response: {response.status_code}")
                 return None
-            
+
             entries = response.json()
-            if entries and len(entries) > 0:
+
+            def matches(entry):
+                if subtype and entry.get('subType') != subtype:
+                    return False
+                if status and entry.get('status') != status:
+                    return False
+                if annotation_code and not any(
+                        a.get('code') == annotation_code for a in (entry.get('annotations') or [])):
+                    return False
+                return True
+
+            entries = [e for e in entries if matches(e)]
+            if entries:
                 # Sort by time and return the most recent
                 entries.sort(key=lambda x: x.get('time', ''), reverse=True)
                 return entries[0]
-            
+
             return None
         except Exception as e:
             logger.warning(f"Error getting last uploaded entry: {e}")

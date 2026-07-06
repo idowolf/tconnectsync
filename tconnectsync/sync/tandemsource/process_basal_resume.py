@@ -31,7 +31,7 @@ class ProcessBasalResume:
         logger.debug("ProcessBasalResume: querying for last uploaded resume-suspension")
         
         if UPLOAD_DESTINATION == 'tidepool':
-            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end)
+            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end, subtype='status', status='resumed')
             last_upload_time = None
             if last_upload:
                 last_upload_time = arrow.get(last_upload["time"])

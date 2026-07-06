@@ -3,7 +3,7 @@ import datetime
 import arrow
 import argparse
 import logging
-import pkg_resources
+import importlib.metadata
 import typing
 
 # Required for cryptography lib in python 3.7
@@ -43,7 +43,7 @@ except Exception as e:
 
 
 try:
-    __version__ = pkg_resources.require("tconnectsync")[0].version
+    __version__ = importlib.metadata.version("tconnectsync")
 except Exception:
     __version__ = "UNKNOWN"
 

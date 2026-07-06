@@ -21,15 +21,20 @@ class TidepoolEntry:
             pump_event_id: Optional event ID from pump
         """
         dt = arrow.get(time_str)
-        
-        return {
+
+        entry = {
             "type": entry_type,
             "time": dt.isoformat(),
             "deviceTime": dt.format("YYYY-MM-DDTHH:mm:ss"),
             "deviceId": DEVICE_ID,
             "timezone": TIMEZONE_NAME,
-            "timezoneOffset": dt.utcoffset().total_seconds() / 60,  # minutes from UTC
+            "timezoneOffset": int(dt.utcoffset().total_seconds() // 60),  # minutes from UTC
         }
+
+        if pump_event_id:
+            entry["payload"] = {"pump_event_id": str(pump_event_id)}
+
+        return entry
     
     @staticmethod
     def basal(value, duration_mins, created_at, reason="", pump_event_id=""):
@@ -89,10 +94,11 @@ class TidepoolEntry:
         
         # Create bolus entry
         bolus_entry = TidepoolEntry._base_entry(created_at, "bolus", pump_event_id)
+        # Note: expectedNormal is deliberately omitted; it is only meant for
+        # interrupted boluses and makes Tidepool display the bolus as cut short.
         bolus_entry.update({
             "subType": "normal",
             "normal": float(bolus),
-            "expectedNormal": float(bolus),
         })
         
         if notes:
@@ -248,15 +254,20 @@ class TidepoolEntry:
             reason: Alert description
             pump_event_id: Event ID from pump
         """
+        # Tidepool has no "alert" deviceEvent subType (valid subTypes are alarm,
+        # calibration, prime, pumpSettingsOverride, reservoirChange, status,
+        # timeChange), so CGM alerts are represented as an alarm with the
+        # alert description preserved in annotations.
         entry = TidepoolEntry._base_entry(created_at, "deviceEvent", pump_event_id)
         entry.update({
-            "subType": "alert",
+            "subType": "alarm",
+            "alarmType": "other",
             "annotations": [{
                 "code": "tconnectsync/cgm-alert",
                 "value": reason
             }] if reason else []
         })
-        
+
         return entry
     
     @staticmethod

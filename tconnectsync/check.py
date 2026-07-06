@@ -3,7 +3,7 @@ import time
 import arrow
 import logging
 import traceback
-import pkg_resources
+import importlib.metadata
 import collections
 from datetime import datetime
 from pprint import pformat as pformat_base
@@ -15,7 +15,7 @@ from .domain.tandemsource.event_class import EventClass
 from .sync.tandemsource.choose_device import ChooseDevice
 
 try:
-    __version__ = pkg_resources.require("tconnectsync")[0].version
+    __version__ = importlib.metadata.version("tconnectsync")
 except Exception:
     __version__ = "UNKNOWN"
 

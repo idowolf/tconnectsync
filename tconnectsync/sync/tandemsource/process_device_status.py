@@ -30,19 +30,19 @@ class ProcessDeviceStatus:
 
     def process(self, events, time_start, time_end):
         logger.debug("ProcessDeviceStatus: querying for last uploaded devicestatus")
-        
+
         if UPLOAD_DESTINATION == 'tidepool':
-            last_upload = self.upload_api.last_uploaded_devicestatus(time_start=time_start, time_end=time_end)
-            last_upload_time = None
-            if last_upload:
-                last_upload_time = arrow.get(last_upload["time"])
-            logger.info("ProcessDeviceStatus: Last Tidepool devicestatus upload: %s" % last_upload_time)
-        else:
-            last_upload = self.upload_api.last_uploaded_devicestatus(time_start=time_start, time_end=time_end)
-            last_upload_time = None
-            if last_upload:
-                last_upload_time = arrow.get(last_upload["created_at"])
-            logger.info("ProcessDeviceStatus: Last Nightscout devicestatus upload: %s" % last_upload_time)
+            # Tidepool's /data upload endpoint has no device/pump status type
+            # ("deviceStatus" is a Nightscout concept and is rejected with a 400),
+            # so pump battery status cannot be synced to Tidepool.
+            logger.info("ProcessDeviceStatus: Skipping device status for Tidepool (no supported data type)")
+            return []
+
+        last_upload = self.upload_api.last_uploaded_devicestatus(time_start=time_start, time_end=time_end)
+        last_upload_time = None
+        if last_upload:
+            last_upload_time = arrow.get(last_upload["created_at"])
+        logger.info("ProcessDeviceStatus: Last Nightscout devicestatus upload: %s" % last_upload_time)
 
 
         last_daily_basal_event = None
