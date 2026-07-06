@@ -35,11 +35,7 @@ class ProcessBasalResume:
     def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         logger.debug("ProcessBasalResume: querying for last uploaded resume-suspension")
         if UPLOAD_DESTINATION == 'tidepool':
-            last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end, subtype='status', status='resumed')
-            last_upload_time = None
-            if last_upload:
-                last_upload_time = arrow.get(last_upload["time"])
-            logger.info("Last Tidepool BasalResume upload: %s" % last_upload_time)
+            return self.process_tidepool(events, time_start, time_end)
         else:
             last_upload = self.upload_api.last_uploaded_entry(BASALRESUME_EVENTTYPE, time_start=time_start, time_end=time_end)
             last_upload_time = None
@@ -74,6 +70,41 @@ class ProcessBasalResume:
 
         return count
 
+
+    def process_tidepool(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
+        # Tidepool does not store resume events as separate records: a resume
+        # carrying previous=<the suspend datum> completes that suspension by
+        # setting its duration. So instead of dedup by last-uploaded resume,
+        # match each resume event to the nearest preceding stored suspension
+        # that hasn't been completed yet (no duration).
+        suspends = self.upload_api.uploaded_entries('deviceEvent', time_start=time_start, time_end=time_end, subtype='status', status='suspended')
+        open_suspends = [s for s in suspends if 'duration' not in s]
+        logger.info("ProcessBasalResume: %d stored suspensions in window, %d incomplete" % (len(suspends), len(open_suspends)))
+
+        upload_entries = []
+        for event in sorted(events, key=lambda x: x.eventTimestamp):
+            entry = self.resume_to_tidepool(event)
+            if not entry:
+                continue
+
+            # Nearest incomplete suspension at or before the resume time
+            resume_time = arrow.get(entry['time'])
+            match = None
+            for suspend in open_suspends:
+                if arrow.get(suspend['time']) <= resume_time:
+                    match = suspend
+                else:
+                    break
+
+            if not match:
+                logger.info("ProcessBasalResume: Skipping resume with no incomplete suspension to complete: %s" % event)
+                continue
+
+            open_suspends.remove(match)
+            TidepoolEntry.link_previous(entry, match)
+            upload_entries.append(entry)
+
+        return upload_entries
 
     def resume_to_entry(self, event: "BaseEvent") -> Optional[dict]:
         if UPLOAD_DESTINATION == 'tidepool':

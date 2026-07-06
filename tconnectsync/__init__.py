@@ -86,6 +86,12 @@ def main(*args, **kwargs):
     if args.start_date and args.end_date:
         time_start = arrow.get(args.start_date)
         time_end = arrow.get(args.end_date)
+        # --end-date is documented as inclusive; a bare date parses to
+        # midnight, which would exclude the entire final day (and truncate
+        # the processors' deduplication window to midnight, causing
+        # duplicate uploads of that day's data on re-runs).
+        if (time_end.hour, time_end.minute, time_end.second) == (0, 0, 0):
+            time_end = time_end.shift(days=1)
     else:
         time_end = datetime.datetime.now()
         time_start = time_end - datetime.timedelta(days=args.days)

@@ -9,6 +9,7 @@ import logging
 from urllib.parse import urljoin
 
 from .api.common import ApiException
+from .parser.tidepool import TidepoolEntry
 
 def format_datetime(date):
     return arrow.get(date).isoformat()
@@ -23,6 +24,10 @@ class TidepoolApi:
         self.session_token = None
         self.user_id = user_id
         self.upload_id = None
+        self.upload_record_created = False
+        # Pump serial for the upload session record; set by the sync process
+        # once the device is chosen (see ProcessTimeRange)
+        self.device_serial = None
         
         # Authenticate on initialization
         self.authenticate()
@@ -70,6 +75,34 @@ class TidepoolApi:
         hash_string = f"{self.user_id}-TConnectSync-{int(time.time())}"
         upload_id = hashlib.md5(hash_string.encode()).hexdigest()
         return upload_id
+
+    def ensure_upload_record(self):
+        """
+        Register an upload session record for this session's uploadId.
+
+        Without one, the Tidepool web app shows the data as coming from an
+        "Unspecified Data Source"; with it, the data is attributed to Tandem.
+        """
+        if self.upload_record_created:
+            return
+
+        if not self.upload_id:
+            self.upload_id = self.generate_upload_id()
+
+        record = TidepoolEntry.upload_record(
+            upload_id=self.upload_id,
+            user_id=self.user_id,
+            device_serial=self.device_serial,
+        )
+
+        url = f"{self.base_url}/data/{self.user_id}"
+        response = requests.post(url, headers=self._get_headers(), json=[record])
+        if response.status_code not in [200, 201]:
+            # Not fatal for the data itself; log and continue
+            logger.warning(f"Failed to register Tidepool upload record: {response.status_code} - {response.text[:200]}")
+        else:
+            logger.debug(f"Registered Tidepool upload record {self.upload_id}")
+        self.upload_record_created = True
     
     def upload_entries(self, tidepool_entries, retry_on_401=True):
         """
@@ -83,9 +116,8 @@ class TidepoolApi:
             logger.info("No entries to upload")
             return
         
-        # Generate upload ID if not exists
-        if not self.upload_id:
-            self.upload_id = self.generate_upload_id()
+        # Generate upload ID and session record if not exists
+        self.ensure_upload_record()
         
         url = f"{self.base_url}/data/{self.user_id}"
         
@@ -122,7 +154,7 @@ class TidepoolApi:
         """
         return self.upload_entries([tidepool_entry])
     
-    def last_uploaded_entry(self, entry_type, time_start=None, time_end=None, subtype=None, status=None, annotation_code=None):
+    def last_uploaded_entry(self, entry_type, time_start=None, time_end=None, subtype=None, status=None, payload_event=None):
         """
         Get the most recent uploaded entry of a specific type.
 
@@ -134,8 +166,8 @@ class TidepoolApi:
                 Several processors share the 'deviceEvent' type; without this
                 filter one processor's uploads would mask another's events.
             status: Only consider entries with this status (e.g. 'suspended')
-            annotation_code: Only consider entries carrying an annotation with
-                this code (e.g. 'tconnectsync/cgm-alert')
+            payload_event: Only consider entries whose payload carries this
+                tconnectsync_event marker (e.g. 'cgm-alert')
 
         Returns:
             The most recent matching entry dict or None
@@ -169,8 +201,7 @@ class TidepoolApi:
                     return False
                 if status and entry.get('status') != status:
                     return False
-                if annotation_code and not any(
-                        a.get('code') == annotation_code for a in (entry.get('annotations') or [])):
+                if payload_event and (entry.get('payload') or {}).get('tconnectsync_event') != payload_event:
                     return False
                 return True
 
@@ -184,6 +215,43 @@ class TidepoolApi:
         except Exception as e:
             logger.warning(f"Error getting last uploaded entry: {e}")
             return None
+
+    def uploaded_entries(self, entry_type, time_start=None, time_end=None, subtype=None, status=None, payload_event=None):
+        """
+        Get all uploaded entries of a specific type in a window, oldest first.
+        Same filters as last_uploaded_entry.
+        """
+        try:
+            url = f"{self.base_url}/data/{self.user_id}"
+
+            params = {
+                'type': entry_type
+            }
+            if time_start:
+                params['startDate'] = format_datetime(time_start)
+            if time_end:
+                params['endDate'] = format_datetime(time_end)
+
+            response = requests.get(url, headers=self._get_headers(), params=params)
+            if response.status_code != 200:
+                logger.warning(f"Tidepool uploaded_entries {entry_type} response: {response.status_code}")
+                return []
+
+            def matches(entry):
+                if subtype and entry.get('subType') != subtype:
+                    return False
+                if status and entry.get('status') != status:
+                    return False
+                if payload_event and (entry.get('payload') or {}).get('tconnectsync_event') != payload_event:
+                    return False
+                return True
+
+            entries = [e for e in response.json() if matches(e)]
+            entries.sort(key=lambda x: x.get('time', ''))
+            return entries
+        except Exception as e:
+            logger.warning(f"Error getting uploaded entries: {e}")
+            return []
     
     def last_uploaded_bg_entry(self, time_start=None, time_end=None):
         """

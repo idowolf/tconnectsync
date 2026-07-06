@@ -87,6 +87,18 @@ class ProcessBasal:
             if entry:
                 upload_entries.append(entry)
 
+        if UPLOAD_DESTINATION == 'tidepool':
+            # Link each basal to its predecessor via "previous": the Tidepool
+            # ingest service otherwise annotates every segment with
+            # basal/mismatched-series, which the web app renders as a
+            # "basal rate segment may be missing here" warning.
+            # The first entry of this batch links to the most recent basal
+            # already stored in Tidepool (from the dedup query above), so the
+            # chain also holds across sync runs.
+            for i, entry in enumerate(upload_entries):
+                previous = upload_entries[i-1] if i > 0 else last_upload
+                TidepoolEntry.link_previous(entry, previous)
+
         return upload_entries
 
     def write(self, upload_entries: List[dict]) -> int:

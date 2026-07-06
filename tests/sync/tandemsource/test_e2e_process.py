@@ -60,18 +60,20 @@ PUMP_LOGS = {
     "clockChanges": [],
 }
 
-# Golden set of Nightscout write operations (entity, payload) the flow emits.
+# Golden set of Nightscout write operations (entity, payload) the flow emits,
+# in the declaration order of ProcessTimeRange.event_classes (basal, bolus,
+# cartridge, CGM readings, user modes).
 # NOTE: the last Temp Basal's long duration is the real "last basal in the
 # window extends to the last event time" behavior with this sparse slice.
 EXPECTED_WRITES = [
         ('treatments', {'eventType': 'Temp Basal', 'reason': 'Algorithm', 'duration': 5.0, 'absolute': 1.28, 'rate': 1.28, 'created_at': '2026-05-14 00:01:00-04:00', 'carbs': None, 'insulin': None, 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '441311'}),
         ('treatments', {'eventType': 'Temp Basal', 'reason': 'Algorithm', 'duration': 6373.916666666667, 'absolute': 1.0, 'rate': 1.0, 'created_at': '2026-05-14 00:06:00-04:00', 'carbs': None, 'insulin': None, 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '441336'}),
-        ('entries', {'type': 'sgv', 'sgv': 167, 'date': 1778731288000, 'dateString': '2026-05-14T00:01:28-0400', 'device': 'Pump (tconnectsync)', 'pump_event_id': '441314'}),
-        ('entries', {'type': 'sgv', 'sgv': 149, 'date': 1778731588000, 'dateString': '2026-05-14T00:06:28-0400', 'device': 'Pump (tconnectsync)', 'pump_event_id': '441339'}),
         ('treatments', {'eventType': 'Combo Bolus', 'created_at': '2026-05-14 11:04:18-04:00', 'carbs': 20, 'insulin': 3.53, 'notes': 'BLE Standard Bolus', 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '442700,442680,442681,442682', 'glucose': '116'}),
         ('treatments', {'eventType': 'Site Change', 'reason': 'Cartridge Filled (180u filled)', 'notes': 'Cartridge Filled (180u filled)', 'created_at': '2026-05-15 23:50:59-04:00', 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '448073'}),
         ('treatments', {'eventType': 'Site Change', 'reason': 'Cannula Filled (0.3u primed)', 'notes': 'Cannula Filled (0.3u primed)', 'created_at': '2026-05-16 00:14:09-04:00', 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '448176'}),
         ('treatments', {'eventType': 'Site Change', 'reason': 'Tubing Filled', 'notes': 'Tubing Filled', 'created_at': '2026-05-15 23:50:59-04:00', 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '448074'}),
+        ('entries', {'type': 'sgv', 'sgv': 167, 'date': 1778731288000, 'dateString': '2026-05-14T00:01:28-0400', 'device': 'Pump (tconnectsync)', 'pump_event_id': '441314'}),
+        ('entries', {'type': 'sgv', 'sgv': 149, 'date': 1778731588000, 'dateString': '2026-05-14T00:06:28-0400', 'device': 'Pump (tconnectsync)', 'pump_event_id': '441339'}),
         ('treatments', {'eventType': 'Sleep', 'reason': 'Sleep (Manual)', 'notes': 'Sleep (Manual)', 'duration': 3.9166666666666665, 'created_at': '2026-05-18 10:16:00-04:00', 'enteredBy': 'Pump (tconnectsync)', 'pump_event_id': '456855,456952'}),
     ]
 

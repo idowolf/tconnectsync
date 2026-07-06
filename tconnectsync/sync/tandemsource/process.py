@@ -37,6 +37,10 @@ class ProcessTimeRange:
         self.secret = secret
         self.features = features
 
+        # Provide the pump serial to the Tidepool upload session record
+        if hasattr(self.upload_api, 'device_serial'):
+            self.upload_api.device_serial = tconnectDevice.get('serialNumber')
+
     event_classes = {
         EventClass.BASAL.name: ProcessBasal,
         EventClass.BASAL_SUSPENSION.name: ProcessBasalSuspension,
@@ -84,8 +88,13 @@ class ProcessTimeRange:
         logger.info(f"Found events: {count_by_eventclass}")
 
         processed_count = 0
-        for clazz, events in for_eventclass.items():
-            if clazz in self.event_classes.keys():
+        # Process in the declaration order of event_classes (not the order
+        # classes happen to first appear in the event stream): some processors
+        # depend on earlier ones' uploads, e.g. ProcessBasalResume completes
+        # suspensions that ProcessBasalSuspension must have uploaded first.
+        for clazz in self.event_classes.keys():
+            if clazz in for_eventclass:
+                events = for_eventclass[clazz]
                 c = self.event_classes[clazz](self.tconnect, self.upload_api, self.tconnect_device_id, self.pretend, self.features)
                 if c.enabled():
                     logger.info("%s is enabled from features %s" % (clazz, self.features))
