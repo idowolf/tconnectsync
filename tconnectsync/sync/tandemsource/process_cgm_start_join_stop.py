@@ -3,40 +3,43 @@ import arrow
 
 from ...features import DEFAULT_FEATURES
 from ... import features
-from ...eventparser.generic import Events, decode_raw_events, EVENT_LEN
-from ...eventparser.utils import bitmask_to_list
-from ...eventparser import events as eventtypes
 from ...domain.tandemsource.event_class import EventClass
+from ...nightscout import format_datetime
 from ...parser.nightscout import (
     CGM_START_EVENTTYPE,
     CGM_JOIN_EVENTTYPE,
     CGM_STOP_EVENTTYPE,
     NightscoutEntry
 )
-from ...parser.tidepool import TidepoolEntry
 from ...secret import UPLOAD_DESTINATION
+
+from typing import Iterable, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...nightscout import NightscoutApi
+    from ...eventparser.raw_event import BaseEvent
 
 logger = logging.getLogger(__name__)
 
 class ProcessCGMStartJoinStop:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
-        self.upload_api = upload_api
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.PUMP_EVENTS in self.features or features.CGM_ALERTS in self.features
 
-    def process(self, events, time_start, time_end):
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
-            # Tidepool doesn't support explicit CGM sensor start/stop/join events
-            # The presence of CGM data (cbg entries) implies an active sensor
+            # Tidepool's upload API has no sensor session event type
+            # (deviceEvent subTypes sensorStart/sensorStop are rejected), so
+            # CGM session events are skipped for Tidepool.
             logger.info("ProcessCGMStartJoinStop: Skipping CGM session events for Tidepool (not supported)")
             return []
-        
-        # For Nightscout, query multiple event types
+
         last_upload = None
         last_upload_time = None
         for eventtype in [CGM_START_EVENTTYPE, CGM_JOIN_EVENTTYPE, CGM_STOP_EVENTTYPE]:
@@ -66,68 +69,41 @@ class ProcessCGMStartJoinStop:
 
         allEvents.sort(key=lambda e: e.eventTimestamp)
 
-        upload_entries = []
+        ns_entries = []
         for event in allEvents:
-            upload_entries.append(self.to_entry(event))
+            ns_entries.append(self.to_nsentry(event))
 
-        return upload_entries
+        return ns_entries
 
-    def write(self, upload_entries):
+    def write(self, ns_entries: List[dict]) -> int:
         count = 0
-        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
-        for entry in upload_entries:
+        for entry in ns_entries:
             if self.pretend:
-                logger.info("Would upload to %s: %s" % (destination, entry))
+                logger.info("Would upload to Nightscout: %s" % entry)
             else:
-                logger.info("Uploading to %s: %s" % (destination, entry))
+                logger.info("Uploading to Nightscout: %s" % entry)
                 self.upload_api.upload_entry(entry)
             count += 1
 
         return count
 
-    def to_entry(self, event):
-        if UPLOAD_DESTINATION == 'tidepool':
-            return self.to_tidepool(event)
-        else:
-            return self.to_nsentry(event)
-    
-    def to_tidepool(self, event):
-        if type(event) in EventClass._CGM_START:
-            return TidepoolEntry.cgm_start(
-                created_at = event.eventTimestamp.format(),
-                reason = "CGM Session Started",
-                pump_event_id = "%s" % event.seqNum
-            )
-        elif type(event) in EventClass._CGM_JOIN:
-            return TidepoolEntry.cgm_join(
-                created_at = event.eventTimestamp.format(),
-                reason = "CGM Session Joined",
-                pump_event_id = "%s" % event.seqNum
-            )
-        elif type(event) in EventClass._CGM_STOP:
-            return TidepoolEntry.cgm_stop(
-                created_at = event.eventTimestamp.format(),
-                reason = "CGM Session Stopped",
-                pump_event_id = "%s" % event.seqNum
-            )
 
-    def to_nsentry(self, event):
+    def to_nsentry(self, event: "BaseEvent") -> Optional[dict]:
         if type(event) in EventClass._CGM_START:
             return NightscoutEntry.cgm_start(
-                created_at = event.eventTimestamp.format(),
+                created_at = format_datetime(event.eventTimestamp),
                 reason = "CGM Session Started",
                 pump_event_id = "%s" % event.seqNum
             )
         elif type(event) in EventClass._CGM_JOIN:
             return NightscoutEntry.cgm_join(
-                created_at = event.eventTimestamp.format(),
+                created_at = format_datetime(event.eventTimestamp),
                 reason = "CGM Session Joined",
                 pump_event_id = "%s" % event.seqNum
             )
         elif type(event) in EventClass._CGM_STOP:
             return NightscoutEntry.cgm_stop(
-                created_at = event.eventTimestamp.format(),
+                created_at = format_datetime(event.eventTimestamp),
                 reason = "CGM Session Stopped",
                 pump_event_id = "%s" % event.seqNum
             )

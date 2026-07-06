@@ -6,7 +6,8 @@ import struct
 from tconnectsync.sync.tandemsource.process_device_status import ProcessDeviceStatus
 from tconnectsync.eventparser import events as eventtypes
 from tconnectsync.eventparser.events import UINT16
-from tconnectsync.eventparser.generic import Event
+from tconnectsync.eventparser.generic import Event, Events
+from tconnectsync.eventparser.raw_event import RawEvent
 
 from ...api.fake import TConnectApi
 from ...nightscout_fake import NightscoutApi
@@ -28,9 +29,9 @@ class TestProcessDeviceStatus(unittest.TestCase):
         ]
 
         self.assertEqual(type(events[0]), eventtypes.LidDailyBasal)
-        self.assertEqual(events[0].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[0].batterychargepercentlsbRaw, 246)
-        self.assertEqual(events[0].batterylipomillivolts, 14080)
+        self.assertEqual(events[0].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[0].batteryChargePercentLSBRaw, 246)
+        self.assertEqual(events[0].batteryLipoMilliVolts, 14080)
 
         p = self.process.process(events, time_start=None, time_end=None)
 
@@ -57,9 +58,9 @@ class TestProcessDeviceStatus(unittest.TestCase):
         ]
 
         self.assertEqual(type(events[0]), eventtypes.LidDailyBasal)
-        self.assertEqual(events[0].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[0].batterychargepercentlsbRaw, 246)
-        self.assertEqual(events[0].batterylipomillivolts, 14080)
+        self.assertEqual(events[0].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[0].batteryChargePercentLSBRaw, 246)
+        self.assertEqual(events[0].batteryLipoMilliVolts, 14080)
 
         p = self.process.process(events, time_start=None, time_end=None)
 
@@ -76,15 +77,15 @@ class TestProcessDeviceStatus(unittest.TestCase):
 
         self.assertEqual(type(events[0]), eventtypes.LidDailyBasal)
         self.assertEqual(events[0].raw.timestampRaw, 534123623) # 2024-12-03 23:40:23-05:00
-        self.assertEqual(events[0].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[0].batterychargepercentlsbRaw, 246)
-        self.assertEqual(events[0].batterylipomillivolts, 14080)
+        self.assertEqual(events[0].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[0].batteryChargePercentLSBRaw, 246)
+        self.assertEqual(events[0].batteryLipoMilliVolts, 14080)
 
         self.assertEqual(type(events[1]), eventtypes.LidDailyBasal)
         self.assertEqual(events[1].raw.timestampRaw, 534133823) # 2024-12-04 02:30:23-05:00
-        self.assertEqual(events[1].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[1].batterychargepercentlsbRaw, 243)
-        self.assertEqual(events[1].batterylipomillivolts, 13824)
+        self.assertEqual(events[1].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[1].batteryChargePercentLSBRaw, 243)
+        self.assertEqual(events[1].batteryLipoMilliVolts, 13824)
 
         p = self.process.process(events, time_start=None, time_end=None)
 
@@ -114,21 +115,21 @@ class TestProcessDeviceStatus(unittest.TestCase):
 
         self.assertEqual(type(events[0]), eventtypes.LidDailyBasal)
         self.assertEqual(events[0].raw.timestampRaw, 534123623) # 2024-12-03 23:40:23-05:00
-        self.assertEqual(events[0].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[0].batterychargepercentlsbRaw, 246)
-        self.assertEqual(events[0].batterylipomillivolts, 14080)
+        self.assertEqual(events[0].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[0].batteryChargePercentLSBRaw, 246)
+        self.assertEqual(events[0].batteryLipoMilliVolts, 14080)
 
         self.assertEqual(type(events[1]), eventtypes.LidDailyBasal)
         self.assertEqual(events[1].raw.timestampRaw, 534133823) # 2024-12-04 02:30:23-05:00
-        self.assertEqual(events[1].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[1].batterychargepercentlsbRaw, 243)
-        self.assertEqual(events[1].batterylipomillivolts, 13824)
+        self.assertEqual(events[1].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[1].batteryChargePercentLSBRaw, 243)
+        self.assertEqual(events[1].batteryLipoMilliVolts, 13824)
 
         self.assertEqual(type(events[2]), eventtypes.LidDailyBasal)
         self.assertEqual(events[2].raw.timestampRaw, 534145823) # 2024-12-04 05:50:23-05:00
-        self.assertEqual(events[2].batterychargepercentmsbRaw, 14)
-        self.assertEqual(events[2].batterychargepercentlsbRaw, 238)
-        self.assertEqual(events[2].batterylipomillivolts, 13568)
+        self.assertEqual(events[2].batteryChargePercentMSBRaw, 14)
+        self.assertEqual(events[2].batteryChargePercentLSBRaw, 238)
+        self.assertEqual(events[2].batteryLipoMilliVolts, 13568)
 
         p = self.process.process(events, time_start=None, time_end=None)
 
@@ -147,6 +148,47 @@ class TestProcessDeviceStatus(unittest.TestCase):
             'pump_event_id': '1047614'
         })
 
+    def test_no_daily_basal_event_degrades_gracefully(self):
+        # DEVICE_STATUS relies on event 81 (LidDailyBasal), which is not in
+        # Tandem's default id list and may not be returned by the pump-logs
+        # endpoint. When it is absent the processor must return nothing rather
+        # than raise. Feed a real non-daily-basal event (eventCode 16).
+        self.nightscout.last_uploaded_devicestatus = lambda *args, **kwargs: None
+
+        events = [Event({
+            "eventCode": 16,
+            "sequenceGroup": 0,
+            "sequenceNumber": 100,
+            "pumpDateTime": "2024-12-03T23:40:23",
+            "eventProperties": {"iob": 1.25, "bg": 112},
+        })]
+
+        p = self.process.process(events, time_start=None, time_end=None)
+        self.assertEqual(p, [])
+
+    def test_daily_basal_missing_battery_is_skipped(self):
+        # If an event 81 is returned without parseable battery fields, skip it
+        # instead of raising on the battery-percent arithmetic.
+        self.nightscout.last_uploaded_devicestatus = lambda *args, **kwargs: None
+
+        raw = RawEvent.build_from_json({
+            "eventCode": 81,
+            "sequenceNumber": 200,
+            "pumpDateTime": "2024-12-03T23:40:23",
+        })
+        event = eventtypes.LidDailyBasal(
+            raw=raw,
+            dailyTotalBasal=None,
+            lastBasalRate=None,
+            iob=None,
+            batteryChargePercentMSBRaw=None,
+            batteryChargePercentLSBRaw=None,
+            batteryLipoMilliVolts=None,
+        )
+
+        p = self.process.process([event], time_start=None, time_end=None)
+        self.assertEqual(p, [])
+
     @unittest.skip
     def test_device_status_battery_calculation(self):
         self.nightscout.last_uploaded_devicestatus = lambda *args, **kwargs: None
@@ -156,8 +198,8 @@ class TestProcessDeviceStatus(unittest.TestCase):
                 # p = self.process.process([event], time_start=None, time_end=None)
                 # self.assertEqual(len(p), 1)
                 # self.assertEqual(p[0]['pump']['battery']['status'], percent_str)
-                msb = event.batterychargepercentmsbRaw
-                lsb = event.batterychargepercentlsbRaw
+                msb = event.batteryChargePercentMSBRaw
+                lsb = event.batteryChargePercentLSBRaw
 
 
                 MAX = struct.unpack(UINT16, bytearray((16, 128)))[0]
@@ -189,51 +231,51 @@ class TestProcessDeviceStatus(unittest.TestCase):
 
 # Mobi @ MAX seen
 # bytearray(b'\x00Q \x19U=\x00\x01\x0f\xa8A\xa5\x04V?L\xcc\xcd?s\x83b\x10Pd\x01')
-#   batterychargepercentmsbRaw=16, batterychargepercentlsbRaw=80, batterylipomillivolts=25601
+#   batteryChargePercentMSBRaw=16, batteryChargePercentLSBRaw=80, batteryLipoMilliVolts=25601
 
 # Mobi @ ~80%
 # bytearray(b'\x00Q\x1f\xfdm\xf5\x00\x00\x04P@4\xa7\xed?L\xcc\xcd@+\xd8\x81\x0f\xa1P\x00'):
-#   batterychargepercentmsbRaw=15, batterychargepercentlsbRaw=161, batterylipomillivolts=20480
+#   batteryChargePercentMSBRaw=15, batteryChargePercentLSBRaw=161, batteryLipoMilliVolts=20480
 #   calc batteryChargePercent = 0.54296875
 
 # Mobi @ ~55%
 # bytearray(b'\x00Q \x04\x15\xdd\x00\x00E\xb1A\x86\xe0\xcf\x00\x00\x00\x00A9\xd2w\x0f\x1d=\x00')
-#    batterychargepercentmsbRaw=15, batterychargepercentlsbRaw=29, batterylipomillivolts=15616
+#    batteryChargePercentMSBRaw=15, batteryChargePercentLSBRaw=29, batteryLipoMilliVolts=15616
 #    calc batteryChargePercent = 0.37109375
 
 # Mobi @ ~45%
 # bytearray(b'\x00Q \x04\xd8f\x00\x00L^A^\xc5\x9a>49X\x00\x00\x00\x00\x0e\xfa7\x00')
-#    batterychargepercentmsbRaw=14, batterychargepercentlsbRaw=250 batterylipomillivolts=14080
+#    batteryChargePercentMSBRaw=14, batteryChargePercentLSBRaw=250 batteryLipoMilliVolts=14080
 #    calc batteryChargePercent = 0.3255208333333333
 
 # Mobi @ ~15%
 # bytearray(b'\x00Q \x06#U\x00\x00X{A\t\xed\xeb?\tx\xd5<\xe0\x81[\x0e\xb5 \x00')
-#   batterychargepercentmsbRaw=14, batterychargepercentlsbRaw=181 batterylipomillivolts=8192
+#   batteryChargePercentMSBRaw=14, batteryChargePercentLSBRaw=181 batteryLipoMilliVolts=8192
 #   calc batteryChargePercent = 0.23567708333333334
 
 # Mobi @ ~20%
 # bytearray(b'\x00Q \x1d\xbb\xa5\x00\x019zA\x1e\x1f`@%p\xa4>\xad\xaa\xf1\x0e\xc1$\x00')
-#   batterychargepercentmsbRaw=14, batterychargepercentlsbRaw=193 batterylipomillivolts=9216
+#   batteryChargePercentMSBRaw=14, batteryChargePercentLSBRaw=193 batteryLipoMilliVolts=9216
 #   calc batteryChargePercent = 0.2513020833333333
 
 # Mobi @ ~10%
 # bytearray(b'\x00Q \x1e\\m\x00\x01?}A\xa0\xe2\x8b?L\xcc\xcd?\xda\xeaj\x0e\xa1\x1b\x00')
-#    batterychargepercentmsbRaw=14, batterychargepercentlsbRaw=161 batterylipomillivolts=6912
+#    batteryChargePercentMSBRaw=14, batteryChargePercentLSBRaw=161 batteryLipoMilliVolts=6912
 #    calc batteryChargePercent = 0.20963541666666666
 
 # Mobi @ ~10%
 # bytearray(b'\x00Q \x1ej~\x00\x01@2A\xa5\xafZ\x00\x00\x00\x00@\x8c[\xed\x0e\x9f\x1a\x00')
-#   batterychargepercentmsbRaw=14, batterychargepercentlsbRaw=159 batterylipomillivolts=6656
+#   batteryChargePercentMSBRaw=14, batteryChargePercentLSBRaw=159 batteryLipoMilliVolts=6656
 #   calc batteryChargePercent = 0.20703125
 
 # Mobi @ ~5%
 # bytearray(b'\x00Q \x1e\xa2\xbd\x00\x01C\x1a?\xd9?}@MO\xdf@uz<\x0e\x88\x15\x00')
-#   batterychargepercentmsbRaw=14, batterychargepercentlsbRaw=136
-#   calc batteryChargePercent = 0.17708333333333334 batterylipomillivolts=5376
+#   batteryChargePercentMSBRaw=14, batteryChargePercentLSBRaw=136
+#   calc batteryChargePercent = 0.17708333333333334 batteryLipoMilliVolts=5376
 
 # Mobi @ ~5%
 # bytearray(b'\x00Q \x1e\xb0\xcd\x00\x01C\xd3@L9W@#33@\x8b\x04\xd2\x0e\x88\x15\x00')
-#   batterychargepercentmsbRaw=14 batterychargepercentlsbRaw=136 batterylipomillivolts=5376
+#   batteryChargePercentMSBRaw=14 batteryChargePercentLSBRaw=136 batteryLipoMilliVolts=5376
 #   calc 0.17708333333333334
 
 

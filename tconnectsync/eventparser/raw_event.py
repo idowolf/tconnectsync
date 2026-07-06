@@ -6,6 +6,7 @@ from ..secret import TIMEZONE_NAME
 from dataclasses import dataclass
 
 EVENT_LEN = 26
+# Big endian
 UINT16 = '>H'
 UINT32 = '>I'
 TANDEM_EPOCH = 1199145600
@@ -45,6 +46,22 @@ class RawEvent:
             timestampRaw = timestampRaw,
             seqNum = seqNum,
             raw = raw
+        )
+
+    @staticmethod
+    def build_from_json(event):
+        # pump-logs JSON events carry pumpDateTime (naive local wall-clock,
+        # no tz). Reproduce the byte path: store timestampRaw as seconds since
+        # TANDEM_EPOCH parsed AS IF UTC, so the .timestamp property re-forces
+        # the same wall-clock into TIMEZONE_NAME. source is unused; raw bytes
+        # are absent on the JSON path.
+        timestampRaw = arrow.get(event["pumpDateTime"]).int_timestamp - TANDEM_EPOCH
+        return RawEvent(
+            source = 0,
+            id = event["eventCode"],
+            timestampRaw = timestampRaw,
+            seqNum = event["sequenceNumber"],
+            raw = b''
         )
 
     @property

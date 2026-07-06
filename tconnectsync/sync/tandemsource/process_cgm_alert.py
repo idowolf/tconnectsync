@@ -14,22 +14,26 @@ from ...parser.nightscout import (
 from ...parser.tidepool import TidepoolEntry
 from ...secret import UPLOAD_DESTINATION
 
+from typing import Iterable, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...eventparser.raw_event import BaseEvent
+
 logger = logging.getLogger(__name__)
 
 class ProcessCGMAlert:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
-        self.upload_api = upload_api
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.CGM_ALERTS in self.features
 
-    def process(self, events, time_start, time_end):
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         logger.debug("ProcessCGMAlert: querying for last uploaded entry")
-        
         if UPLOAD_DESTINATION == 'tidepool':
             last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end, subtype='alarm', annotation_code='tconnectsync/cgm-alert')
             last_upload_time = None
@@ -62,10 +66,9 @@ class ProcessCGMAlert:
 
         return upload_entries
 
-    def write(self, upload_entries):
+    def write(self, upload_entries: List[dict]) -> int:
         count = 0
         destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
         for entry in upload_entries:
             if self.pretend:
                 logger.info("Would upload to %s: %s" % (destination, entry))
@@ -76,62 +79,48 @@ class ProcessCGMAlert:
 
         return count
 
-    def alert_to_entry(self, alert):
+    def cgm_alert_entry(self, created_at: str, reason: str, pump_event_id: str) -> dict:
         if UPLOAD_DESTINATION == 'tidepool':
-            return self.alert_to_tidepool(alert)
-        else:
-            return self.alert_to_nsentry(alert)
-    
-    def alert_to_tidepool(self, alert):
-        if not alert.dalertid:
-            logger.info("ProcessCGMAlert: Skipping alert with unknown dalertid %d: %s" % (alert.dalertidRaw, alert))
+            return TidepoolEntry.cgm_alert(
+                created_at = created_at,
+                reason = reason,
+                pump_event_id = pump_event_id
+            )
+        return NightscoutEntry.cgm_alert(
+            created_at = created_at,
+            reason = reason,
+            pump_event_id = pump_event_id
+        )
+
+    def alert_to_entry(self, alert: "BaseEvent") -> Optional[dict]:
+        # FSL3 alert codes are defined in eventparser/static_dicts.py:CGM_ALERTS_DICT
+        # Alert code meanings are documented in comments there.
+        if not alert.dalertId:
+            logger.info("ProcessCGMAlert: Skipping alert with unknown dalertid %d: %s" % (alert.dalertIdRaw, alert))
             return None
 
         if type(alert) == eventtypes.LidCgmAlertActivated:
-            return TidepoolEntry.cgm_alert(
+            return self.cgm_alert_entry(
                 created_at = alert.eventTimestamp.format(),
-                reason = ("CGM Alert (%s)" % alert.dalertid.name) if alert.dalertid else "CGM Alert (Unknown)",
+                reason = ("CGM Alert (%s)" % alert.dalertId.name) if alert.dalertId else "CGM Alert (Unknown)",
                 pump_event_id = "%s" % alert.seqNum
             )
         elif type(alert) == eventtypes.LidCgmAlertActivatedDex:
-            if alert.dalertid == eventtypes.LidCgmAlertActivatedDex.DalertidEnum.CgmOutOfRange:
-                logger.info("ProcessCGMAlert: Skipping alert with CgmOutOfRange dalertid %d: %s" % (alert.dalertidRaw, alert))
+            if alert.dalertId == eventtypes.LidCgmAlertActivatedDex.DalertidEnum.CgmOutOfRange:
+                logger.info("ProcessCGMAlert: Skipping alert with CgmOutOfRange dalertid %d: %s" % (alert.dalertIdRaw, alert))
                 return None
-            return TidepoolEntry.cgm_alert(
+            return self.cgm_alert_entry(
                 created_at = alert.eventTimestamp.format(),
-                reason = ("Dexcom CGM Alert (%s)" % alert.dalertid.name) if alert.dalertid else "Dexcom CGM Alert (Unknown)",
+                reason = ("Dexcom CGM Alert (%s)" % alert.dalertId.name) if alert.dalertId else "Dexcom CGM Alert (Unknown)",
                 pump_event_id = "%s" % alert.seqNum
             )
         elif type(alert) == eventtypes.LidCgmAlertActivatedFsl2:
-            return TidepoolEntry.cgm_alert(
+            return self.cgm_alert_entry(
                 created_at = alert.eventTimestamp.format(),
-                reason = ("Libre CGM Alert (%s)" % alert.dalertid.name) if alert.dalertid else "Libre CGM Alert (Unknown)",
+                reason = ("Libre CGM Alert (%s)" % alert.dalertId.name) if alert.dalertId else "Libre CGM Alert (Unknown)",
                 pump_event_id = "%s" % alert.seqNum
             )
 
-    def alert_to_nsentry(self, alert):
-        if not alert.dalertid:
-            logger.info("ProcessCGMAlert: Skipping alert with unknown dalertid %d: %s" % (alert.dalertidRaw, alert))
-            return None
-
-        if type(alert) == eventtypes.LidCgmAlertActivated:
-            return NightscoutEntry.cgm_alert(
-                created_at = alert.eventTimestamp.format(),
-                reason = ("CGM Alert (%s)" % alert.dalertid.name) if alert.dalertid else "CGM Alert (Unknown)",
-                pump_event_id = "%s" % alert.seqNum
-            )
-        elif type(alert) == eventtypes.LidCgmAlertActivatedDex:
-            if alert.dalertid == eventtypes.LidCgmAlertActivatedDex.DalertidEnum.CgmOutOfRange:
-                logger.info("ProcessCGMAlert: Skipping alert with CgmOutOfRange dalertid %d: %s" % (alert.dalertidRaw, alert))
-                return None
-            return NightscoutEntry.cgm_alert(
-                created_at = alert.eventTimestamp.format(),
-                reason = ("Dexcom CGM Alert (%s)" % alert.dalertid.name) if alert.dalertid else "Dexcom CGM Alert (Unknown)",
-                pump_event_id = "%s" % alert.seqNum
-            )
-        elif type(alert) == eventtypes.LidCgmAlertActivatedFsl2:
-            return NightscoutEntry.cgm_alert(
-                created_at = alert.eventTimestamp.format(),
-                reason = ("Libre CGM Alert (%s)" % alert.dalertid.name) if alert.dalertid else "Libre CGM Alert (Unknown)",
-                pump_event_id = "%s" % alert.seqNum
-            )
+    # Backwards-compatible alias for the Nightscout-only converter
+    def alert_to_nsentry(self, alert: "BaseEvent") -> Optional[dict]:
+        return self.alert_to_entry(alert)

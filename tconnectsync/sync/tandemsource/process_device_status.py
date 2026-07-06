@@ -12,32 +12,36 @@ from ...parser.nightscout import (
     SLEEP_EVENTTYPE,
     NightscoutEntry
 )
-from ...parser.tidepool import TidepoolEntry
 from ...secret import UPLOAD_DESTINATION
+
+from typing import Iterable, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...nightscout import NightscoutApi
+    from ...eventparser.raw_event import BaseEvent
 
 logger = logging.getLogger(__name__)
 
 class ProcessDeviceStatus:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
-        self.upload_api = upload_api
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.DEVICE_STATUS in self.features
 
-    def process(self, events, time_start, time_end):
-        logger.debug("ProcessDeviceStatus: querying for last uploaded devicestatus")
-
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
-            # Tidepool's /data upload endpoint has no device/pump status type
+            # Tidepool's upload API has no device/pump status type
             # ("deviceStatus" is a Nightscout concept and is rejected with a 400),
             # so pump battery status cannot be synced to Tidepool.
             logger.info("ProcessDeviceStatus: Skipping device status for Tidepool (no supported data type)")
             return []
 
+        logger.debug("ProcessDeviceStatus: querying for last uploaded devicestatus")
         last_upload = self.upload_api.last_uploaded_devicestatus(time_start=time_start, time_end=time_end)
         last_upload_time = None
         if last_upload:
@@ -62,40 +66,41 @@ class ProcessDeviceStatus:
 
         logger.info("ProcessDeviceStatus: last_daily_basal_event=%s" % (last_daily_basal_event))
 
-        upload_entries = []
-        upload_entries.append(self.daily_basal_to_entry(last_daily_basal_event))
-        return upload_entries
+        entry = self.daily_basal_to_nsentry(last_daily_basal_event)
+        if entry is None:
+            return []
+        return [entry]
 
-    def daily_basal_to_entry(self, event):
-        if UPLOAD_DESTINATION == 'tidepool':
-            return TidepoolEntry.devicestatus(
-                created_at=event.eventTimestamp.format(),
-                batteryVoltage=(float(event.batterylipomillivolts or 0)/1000),
-                batteryPercent=int(100*event.batteryChargePercent),
-                pump_event_id = "%s" % event.seqNum
-            )
-        else:
-            return NightscoutEntry.devicestatus(
-                created_at=event.eventTimestamp.format(),
-                batteryVoltage=(float(event.batterylipomillivolts or 0)/1000),
-                batteryPercent=int(100*event.batteryChargePercent),
-                pump_event_id = "%s" % event.seqNum
-            )
+    def daily_basal_to_nsentry(self, event: "BaseEvent") -> Optional[dict]:
+        # NOTE: the pump-logs endpoint does not emit event 81 (LID_DAILY_BASAL)
+        # for either t:slim X2 or Mobi (verified against live accounts), and no
+        # other returned event carries battery data. DEVICE_STATUS therefore
+        # yields nothing on the new API; this path stays for the binary decoder
+        # and in case the endpoint starts returning event 81.
+        #
+        # The battery percent is derived from the msb/lsb raw fields; if the
+        # event arrived without them (an event shape we can't yet parse), skip
+        # it rather than raise on the arithmetic below.
+        if event.batteryChargePercentMSBRaw is None or event.batteryChargePercentLSBRaw is None:
+            logger.warning("ProcessDeviceStatus: skipping daily basal event missing battery data: %s" % event)
+            return None
+
+        return NightscoutEntry.devicestatus(
+            created_at=event.eventTimestamp.format(),
+            batteryVoltage=(float(event.batteryLipoMilliVolts or 0)/1000),
+            batteryPercent=int(100*event.batteryChargePercent),
+            pump_event_id = "%s" % event.seqNum
+        )
 
 
-    def write(self, upload_entries):
+    def write(self, ns_entries: List[dict]) -> int:
         count = 0
-        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
-        for entry in upload_entries:
+        for entry in ns_entries:
             if self.pretend:
-                logger.info("Would upload devicestatus to %s: %s" % (destination, entry))
+                logger.info("Would upload devicestatus to Nightscout: %s" % entry)
             else:
-                logger.info("Uploading devicestatus to %s: %s" % (destination, entry))
-                if UPLOAD_DESTINATION == 'tidepool':
-                    self.upload_api.upload_entry(entry)
-                else:
-                    self.upload_api.upload_entry(entry, entity='devicestatus')
+                logger.info("Uploading devicestatus to Nightscout: %s" % entry)
+                self.upload_api.upload_entry(entry, entity='devicestatus')
             count += 1
 
         return count

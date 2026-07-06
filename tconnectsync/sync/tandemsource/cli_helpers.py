@@ -17,4 +17,4 @@ def fetch_oneshot(username, password, time_start=None, time_end=None, region='US
         time_start = time_end - datetime.timedelta(days=1)
 
     tconnectDevice = ChooseDevice(secret, tconnect).choose()
-    return tconnect.tandemsource.pump_events(tconnectDevice['tconnectDeviceId'], time_start, time_end, fetch_all_event_types=secret.FETCH_ALL_EVENT_TYPES)
+    return tconnect.tandemsource.pump_events(tconnectDevice['assignmentId'], time_start, time_end, fetch_all_event_types=secret.FETCH_ALL_EVENT_TYPES)

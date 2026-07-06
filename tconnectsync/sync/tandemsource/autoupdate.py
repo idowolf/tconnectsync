@@ -5,6 +5,7 @@ import sys
 import arrow
 
 from ...features import DEFAULT_FEATURES
+from ...api.tandemsource import naive_local_to_utc
 from .process import ProcessTimeRange
 from .choose_device import ChooseDevice
 
@@ -19,6 +20,7 @@ class TandemSourceAutoupdate:
         self.last_event_time = 0
         self.last_attempt_time = 0
         self.last_event_seqnum = None
+        self.last_successful_process_time_range = None
         self.time_diffs_between_attempts = []
         self.time_diffs_between_updates = []
 
@@ -46,7 +48,7 @@ class TandemSourceAutoupdate:
             tconnectDevice = ChooseDevice(self.secret, tconnect).choose()
 
             event_seqnum = None
-            cur_max_date_with_events = arrow.get(tconnectDevice['maxDateWithEvents']).float_timestamp
+            cur_max_date_with_events = arrow.get(naive_local_to_utc(tconnectDevice['maxDateOfEvents'])).float_timestamp
             if not self.last_max_date_with_events or cur_max_date_with_events > self.last_max_date_with_events:
                 logger.info('New reported tandemsource data. (cur_max_date: %s last_max_date: %s)' % (cur_max_date_with_events, self.last_max_date_with_events))
 
@@ -72,11 +74,11 @@ class TandemSourceAutoupdate:
                 self.last_attempt_time = now
                 self.time_diffs_between_attempts = []
             else:
-                logger.info('No new reported tandemsource data. cur_max_date: %s (%dm ago) last_event_time: %s (%dm ago)' % (
+                logger.info('No new reported tandemsource data. cur_max_date: %s (%s) last_event_time: %s (%s)' % (
                     arrow.get(cur_max_date_with_events) if cur_max_date_with_events else None,
-                    (now - cur_max_date_with_events)//60 if cur_max_date_with_events else None,
+                    '%dm ago' % ((now - cur_max_date_with_events)//60) if cur_max_date_with_events else None,
                     arrow.get(self.last_event_time) if self.last_event_time else None,
-                    (now - self.last_event_time)//60 if self.last_event_time else None
+                    '%dm ago' % ((now - self.last_event_time)//60) if self.last_event_time else None
                 ))
 
                 # If we haven't seen the pump event index update in AUTOUPDATE_NO_DATA_FAILURE_MINUTES,

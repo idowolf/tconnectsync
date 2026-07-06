@@ -2,7 +2,10 @@ import logging
 import arrow
 import copy
 import json
-from typing import Tuple
+from typing import Any, Callable, List, Tuple, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...nightscout import NightscoutApi
 
 from ...features import DEFAULT_FEATURES
 from ... import features
@@ -14,47 +17,48 @@ from ...secret import NIGHTSCOUT_PROFILE_UPLOAD_MODE, UPLOAD_DESTINATION
 
 logger = logging.getLogger(__name__)
 
-def _get_default_upload_mode():
+def _get_default_upload_mode() -> str:
     return NIGHTSCOUT_PROFILE_UPLOAD_MODE
 
 class UpdateProfiles:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
-        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
+        self.nightscout = upload_api  # NightscoutApi when destination is nightscout
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.PROFILES in self.features
 
-    def update(self, pretend):
-        # Tidepool doesn't use Nightscout-style profiles
-        # Profile management for Tidepool would need different implementation
+    def update(self, pretend: bool) -> bool:
+        # Tidepool doesn't use Nightscout-style profiles; profile upload
+        # for Tidepool (pumpSettings) is not implemented
         if UPLOAD_DESTINATION == 'tidepool':
             logger.info("UpdateProfiles: Skipping profile update for Tidepool (not supported yet)")
             return False
-        
+
         upload_mode = _get_default_upload_mode()
         logger.debug("UpdateProfiles: getting Tandem Source profile data")
 
-        all_metadata = self.tconnect.tandemsource.pump_event_metadata()
+        all_metadata = self.tconnect.tandemsource.get_pumper().get('pumps', [])
         pump_meta = None
         for m in all_metadata:
-            if m['tconnectDeviceId'] == self.tconnect_device_id:
+            if m['assignmentId'] == self.tconnect_device_id:
                 pump_meta = m
 
         if not pump_meta:
             return False
 
-        raw_settings = pump_meta.get("lastUpload", {}).get("settings")
+        s = pump_meta.get("settings")
+        raw_settings = s["details"] if s else None
         if not raw_settings:
             return False
 
         pump_settings = PumpSettings.from_dict(raw_settings)
         logger.info("Current pump settings: %s" % pump_settings)
 
-        ns_profile_obj = self.upload_api.current_profile()
+        ns_profile_obj = self.nightscout.current_profile()
         logger.debug("Current Nightscout profile: %s" % ns_profile_obj)
         if ns_profile_obj is None:
             ns_profile_obj = {}
@@ -71,14 +75,14 @@ class UpdateProfiles:
             logger.info("Adding new Nightscout profiles object: %s", profile_to_upload)
 
             if not pretend:
-                self.upload_api.upload_entry(profile_to_upload, entity='profile')
+                self.nightscout.upload_entry(profile_to_upload, entity='profile')
             return True
 
         elif upload_mode == 'replace':
             logger.info("Replacing new Nightscout profiles object: %s", ns_profile_new)
 
             if not pretend:
-                self.upload_api.put_entry(ns_profile_new, entity='profile')
+                self.nightscout.put_entry(ns_profile_new, entity='profile')
             return True
 
         else:
@@ -166,7 +170,7 @@ class UpdateProfiles:
             return True
 
         # convert all JSON values into strings
-        def map_nested_dicts_modify(ob, func):
+        def map_nested_dicts_modify(ob: dict, func: Callable) -> None:
             for k, v in ob.items():
                 if isinstance(v, dict):
                     map_nested_dicts_modify(v, func)
@@ -175,7 +179,7 @@ class UpdateProfiles:
                 else:
                     ob[k] = func(v)
 
-        def map_nested_lists_modify(ob, func):
+        def map_nested_lists_modify(ob: list, func: Callable) -> None:
             for i in range(len(ob)):
                 v = ob[i]
                 if isinstance(v, dict):
@@ -185,7 +189,7 @@ class UpdateProfiles:
                 else:
                     ob[i] = func(v)
 
-        def to_numeric(x):
+        def to_numeric(x: Any) -> Any:
             if type(x) in [int, float]:
                 return '%f' % x
             try:

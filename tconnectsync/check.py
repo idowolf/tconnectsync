@@ -3,20 +3,23 @@ import time
 import arrow
 import logging
 import traceback
-import importlib.metadata
 import collections
 from datetime import datetime
 from pprint import pformat as pformat_base
 
+if sys.version_info < (3, 8):
+    from importlib_metadata import PackageNotFoundError, version
+else:
+    from importlib.metadata import PackageNotFoundError, version
+
 from .nightscout import NightscoutApi
 from .parser.nightscout import BASAL_EVENTTYPE, BOLUS_EVENTTYPE
-from .parser.tconnect import TConnectEntry
 from .domain.tandemsource.event_class import EventClass
 from .sync.tandemsource.choose_device import ChooseDevice
 
 try:
-    __version__ = importlib.metadata.version("tconnectsync")
-except Exception:
+    __version__ = version("tconnectsync")
+except PackageNotFoundError:
     __version__ = "UNKNOWN"
 
 """
@@ -58,6 +61,9 @@ def check_login(tconnect, time_start, time_end, verbose=False, sanitize=True):
     except ImportError as e:
         log("Error: Unable to load config file. Please check your .env file or environment variables")
         log_err(e)
+        # Config never loaded; the names below are unbound, so stop here instead
+        # of crashing with a NameError.
+        return
 
     log(f"Using {TCONNECT_REGION=}")
 
@@ -87,7 +93,7 @@ def check_login(tconnect, time_start, time_end, verbose=False, sanitize=True):
     serialNumberToPump = None
     try:
         log("Fetching pump metadata...")
-        pumpEventMetadata = tconnect.tandemsource.pump_event_metadata()
+        pumpEventMetadata = tconnect.tandemsource.get_pumper().get('pumps', [])
 
         serialNumberToPump = {p['serialNumber']: p for p in pumpEventMetadata}
         log(f'Found {len(serialNumberToPump)} pumps: {serialNumberToPump.keys()}')
@@ -99,11 +105,11 @@ def check_login(tconnect, time_start, time_end, verbose=False, sanitize=True):
 
         log(f'ChooseDevice selected: {tconnectDevice}')
 
-        tconnectDeviceId = tconnectDevice['tconnectDeviceId']
+        deviceId = tconnectDevice['assignmentId']
 
-        log(f'Fetching pump events for {tconnectDeviceId=} {time_start=} {time_end=} fetch_all_event_types=False')
+        log(f'Fetching pump events for {deviceId=} {time_start=} {time_end=} fetch_all_event_types=False')
 
-        events = tconnect.tandemsource.pump_events(tconnectDeviceId, time_start, time_end, fetch_all_event_types=False)
+        events = tconnect.tandemsource.pump_events(deviceId, time_start, time_end, fetch_all_event_types=False)
         events = list(events)
 
         log(f"Found raw events count: {len(events)}")
@@ -184,7 +190,7 @@ def check_login(tconnect, time_start, time_end, verbose=False, sanitize=True):
             if serialNumberToPump:
                 for i, (pumpSerial, pumpDetails) in enumerate(serialNumberToPump.items()):
                     sanitizedData[f'PUMP_SERIAL_{i}'] = pumpSerial
-                    sanitizedData[f'TCONNECT_DEVICE_ID_{i}'] = pumpDetails['tconnectDeviceId']
+                    sanitizedData[f'TCONNECT_DEVICE_ID_{i}'] = pumpDetails['assignmentId']
             loglines = [run_sanitize(i, sanitizedData) for i in loglines]
 
         f.writelines(loglines)

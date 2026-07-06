@@ -3,35 +3,90 @@ import arrow
 
 from ...features import DEFAULT_FEATURES
 from ... import features
-from ...eventparser.generic import Events, decode_raw_events, EVENT_LEN
-from ...eventparser.utils import bitmask_to_list
+from ... import secret
 from ...eventparser.raw_event import TANDEM_EPOCH
 from ...eventparser import events as eventtypes
-from ...domain.tandemsource.event_class import EventClass
-from ...parser.nightscout import (
-    CGM_START_EVENTTYPE,
-    NightscoutEntry
-)
+from ...parser.nightscout import NightscoutEntry
 from ...parser.tidepool import TidepoolEntry
-from ...secret import UPLOAD_DESTINATION, TIMEZONE_NAME
+from ...secret import UPLOAD_DESTINATION
+
+from typing import Iterable, List, Optional, Union, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...nightscout import NightscoutApi
+    from ...eventparser.raw_event import BaseEvent
+
+# The four CGM-reading event types share the glucoseValueStatus /
+# currentGlucoseDisplayValue fields determine_glucose_value() reads.
+CgmReadingEvent = Union[
+    eventtypes.LidCgmDataG7,
+    eventtypes.LidCgmDataGxb,
+    eventtypes.LidCgmDataFsl2,
+    eventtypes.LidCgmDataFsl3,
+]
 
 logger = logging.getLogger(__name__)
 
+# Mirrors the Tandem Source frontend (CgmBuilder.determineGlucoseValue): out-of-range
+# and special readings are reported as sentinel values rather than the raw display value.
+GLUCOSE_LIMIT_LOW = 40
+GLUCOSE_LIMIT_HIGH = 400
+GLUCOSE_VALUE_LOW = 39
+GLUCOSE_VALUE_HIGH = 401
+
+def _resolve_glucose_value(display_value, status, *, precise, high, low):
+    if status == high:
+        return GLUCOSE_VALUE_HIGH
+    if status == low:
+        return GLUCOSE_VALUE_LOW
+    if status == precise:
+        if display_value < GLUCOSE_LIMIT_LOW:
+            return GLUCOSE_VALUE_LOW
+        if display_value > GLUCOSE_LIMIT_HIGH:
+            return GLUCOSE_VALUE_HIGH
+    return display_value
+
+# Each sensor is handled separately: the glucoseValueStatus enums are NOT assumed
+# to be consistent across sensor types (e.g. G6 names its members differently), so
+# every branch resolves against that sensor's own enum members.
+def determine_glucose_value(event: CgmReadingEvent) -> int:
+    display_value = event.currentGlucoseDisplayValue
+    status = event.glucoseValueStatus
+
+    if isinstance(event, eventtypes.LidCgmDataG7):
+        e = eventtypes.LidCgmDataG7.GlucosevaluestatusEnum
+        return _resolve_glucose_value(display_value, status,
+                                      precise=e.PreciseValue, high=e.SpecialHigh, low=e.SpecialLow)
+    if isinstance(event, eventtypes.LidCgmDataGxb):
+        e = eventtypes.LidCgmDataGxb.GlucosevaluestatusEnum
+        return _resolve_glucose_value(display_value, status,
+                                      precise=e.CurrentglucosedisplayvalueContainsTheGlucoseReading,
+                                      high=e.TheGlucoseReadingIsHigh, low=e.TheGlucoseReadingIsLow)
+    if isinstance(event, eventtypes.LidCgmDataFsl3):
+        e = eventtypes.LidCgmDataFsl3.GlucosevaluestatusEnum
+        return _resolve_glucose_value(display_value, status,
+                                      precise=e.PreciseValue, high=e.SpecialHigh, low=e.SpecialLow)
+    if isinstance(event, eventtypes.LidCgmDataFsl2):
+        e = eventtypes.LidCgmDataFsl2.GlucosevaluestatusEnum
+        return _resolve_glucose_value(display_value, status,
+                                      precise=e.PreciseValue, high=e.SpecialHigh, low=e.SpecialLow)
+
+    return display_value
+
 class ProcessCGMReading:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES, timezone: Optional[str] = None) -> None:
         self.tconnect = tconnect
         self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
+        self.timezone = timezone or secret.TIMEZONE_NAME
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.CGM in self.features
 
-    def process(self, events, time_start, time_end):
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         logger.debug("ProcessCGMReading: querying for last uploaded entry")
-        
-        # Query for last upload based on destination
         if UPLOAD_DESTINATION == 'tidepool':
             # Only look at cbg (CGM) entries: smbg entries come from bolus BG
             # readings and would wrongly mask not-yet-uploaded CGM history.
@@ -56,12 +111,6 @@ class ProcessCGMReading:
                     logger.info("ProcessCGMReading: Skipping %s not after last upload time: %s (time range: %s - %s)" % (type(event), event, time_start, time_end))
                 continue
 
-            # Out-of-range (high/low) readings report a display value of 0,
-            # which must not be uploaded as an actual glucose value
-            if not event.currentglucosedisplayvalue or event.currentglucosedisplayvalue <= 0:
-                logger.info("ProcessCGMReading: Skipping out-of-range/empty CGM reading: %s" % event)
-                continue
-
             readings.append(event)
 
         upload_entries = []
@@ -70,17 +119,15 @@ class ProcessCGMReading:
 
         return upload_entries
 
-    def write(self, upload_entries):
+    def write(self, upload_entries: List[dict]) -> int:
         count = 0
-        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-
         if UPLOAD_DESTINATION == 'tidepool':
             # Upload CGM readings in a single batch; a backfill can contain
             # hundreds of readings and per-entry requests are slow.
             if upload_entries:
                 if self.pretend:
                     for entry in upload_entries:
-                        logger.info("Would upload to %s: %s" % (destination, entry))
+                        logger.info("Would upload to Tidepool: %s" % entry)
                 else:
                     logger.info("Uploading %d CGM readings to Tidepool in batch..." % len(upload_entries))
                     self.upload_api.upload_entries(upload_entries)
@@ -88,46 +135,36 @@ class ProcessCGMReading:
         else:
             for entry in upload_entries:
                 if self.pretend:
-                    logger.info("Would upload to %s: %s" % (destination, entry))
+                    logger.info("Would upload to Nightscout: %s" % entry)
                 else:
-                    logger.info("Uploading to %s: %s" % (destination, entry))
+                    logger.info("Uploading to Nightscout: %s" % entry)
                     self.upload_api.upload_entry(entry, entity='entries')
                 count += 1
 
         return count
 
-    def timestamp_for(self, event):
+    def timestamp_for(self, event: "BaseEvent") -> arrow.Arrow:
         # For backfills the time the event was added to the pump's event store
-        # might not be the time it actually occurred, so we use the egvTimestamp.
-        # Like all pump event timestamps, egvTimestamp is in the pump's local
-        # wall-clock time, not UTC (see RawEvent.timestamp).
-        return arrow.get(TANDEM_EPOCH + event.egvTimestamp, tzinfo='UTC').replace(tzinfo=TIMEZONE_NAME)
+        # might not be the time it actually occurred, so we use the egvTimestamp
+        return arrow.get(TANDEM_EPOCH + event.egvTimeStamp, tzinfo='UTC').replace(tzinfo=self.timezone)
 
-    def to_entry(self, event):
-        """
-        Convert CGM reading to either Nightscout or Tidepool format based on UPLOAD_DESTINATION.
-        """
+    def to_entry(self, event: "BaseEvent") -> Optional[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
             return self.to_tidepool(event)
-        else:
-            return self.to_nsentry(event)
-    
-    def to_tidepool(self, event):
-        """
-        Convert CGM reading to Tidepool format.
-        """
+        return self.to_nsentry(event)
+
+    def to_tidepool(self, event: "BaseEvent") -> Optional[dict]:
+        # Out-of-range readings arrive as the same LOW/HIGH sentinel values
+        # (39/401 mg/dL) the Tandem Source frontend uses.
         return TidepoolEntry.cgm(
-            sgv = event.currentglucosedisplayvalue,
+            sgv = determine_glucose_value(event),
             created_at = self.timestamp_for(event).format(),
             pump_event_id = "%s" % event.seqNum,
         )
 
-    def to_nsentry(self, event):
-        """
-        Convert CGM reading to Nightscout format (original implementation).
-        """
+    def to_nsentry(self, event: "BaseEvent") -> Optional[dict]:
         return NightscoutEntry.entry(
-            sgv = event.currentglucosedisplayvalue,
+            sgv = determine_glucose_value(event),
             created_at = self.timestamp_for(event).format(),
             pump_event_id = "%s" % event.seqNum,
         )

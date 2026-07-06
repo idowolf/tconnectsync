@@ -3,13 +3,15 @@ import datetime
 import arrow
 import argparse
 import logging
-import importlib.metadata
 import typing
 
 # Required for cryptography lib in python 3.7
 if sys.version_info < (3, 8):
     import typing_extensions
     typing.Protocol = typing_extensions.Protocol
+    from importlib_metadata import PackageNotFoundError, version
+else:
+    from importlib.metadata import PackageNotFoundError, version
 
 from .api import TConnectApi
 from .sync.tandemsource.autoupdate import TandemSourceAutoupdate
@@ -43,8 +45,8 @@ except Exception as e:
 
 
 try:
-    __version__ = importlib.metadata.version("tconnectsync")
-except Exception:
+    __version__ = version("tconnectsync")
+except PackageNotFoundError:
     __version__ = "UNKNOWN"
 
 def parse_args(*args, **kwargs):
@@ -98,17 +100,14 @@ def main(*args, **kwargs):
         logging.warn('NO USERNAME WAS PROVIDED. Ensure you have set TCONNECT_EMAIL appropriately.')
     if TCONNECT_PASSWORD == 'password':
         logging.warn('NO PASSWORD WAS PROVIDED. Ensure you have set TCONNECT_PASSWORD appropriately.')
-    
-    # Check upload destination configuration
-    if UPLOAD_DESTINATION == 'nightscout':
-        if NS_URL == 'https://yournightscouturl/':
-            logging.warn('NO NIGHTSCOUT URL WAS PROVIDED. Ensure your have set NS_URL appropriately.')
-    elif UPLOAD_DESTINATION == 'tidepool':
+    if UPLOAD_DESTINATION == 'tidepool':
         if TIDEPOOL_USERNAME == 'your_tidepool_email@example.com':
             logging.warn('NO TIDEPOOL USERNAME WAS PROVIDED. Ensure you have set TIDEPOOL_USERNAME appropriately.')
         if TIDEPOOL_PASSWORD == 'your_tidepool_password':
             logging.warn('NO TIDEPOOL PASSWORD WAS PROVIDED. Ensure you have set TIDEPOOL_PASSWORD appropriately.')
-    
+    else:
+        if NS_URL == 'https://yournightscouturl/':
+            logging.warn('NO NIGHTSCOUT URL WAS PROVIDED. Ensure your have set NS_URL appropriately.')
     if PUMP_SERIAL_NUMBER == '11111111':
         if args.tandem_source:
             secret.PUMP_SERIAL_NUMBER = None
@@ -147,4 +146,3 @@ def main(*args, **kwargs):
 
         # return exit code 0 if processed events
         sys.exit(0 if added>0 else 1)
-

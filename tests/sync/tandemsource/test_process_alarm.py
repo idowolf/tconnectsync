@@ -5,7 +5,7 @@ import arrow
 
 from tconnectsync.sync.tandemsource.process_alarm import ProcessAlarm
 from tconnectsync.eventparser import events as eventtypes
-from tconnectsync.eventparser.generic import Event
+from tconnectsync.eventparser.generic import Event, Events
 
 from ...api.fake import TConnectApi
 from ...nightscout_fake import NightscoutApi
@@ -28,7 +28,7 @@ class TestProcessAlarm(unittest.TestCase):
         ]
 
         self.assertEqual(type(events[0]), eventtypes.LidAlarmActivated)
-        self.assertEqual(events[0].alarmid, eventtypes.LidAlarmActivated.AlarmidEnum.ResumePumpAlarm)
+        self.assertEqual(events[0].alarmId, eventtypes.LidAlarmActivated.AlarmidEnum.ResumePumpAlarm)
 
         p = self.process.process(events, time_start=None, time_end=None)
 
@@ -44,7 +44,7 @@ class TestProcessAlarm(unittest.TestCase):
         ]
 
         self.assertEqual(type(events[0]), eventtypes.LidAlarmActivated)
-        self.assertEqual(events[0].alarmid, eventtypes.LidAlarmActivated.AlarmidEnum.EmptyCartridgeAlarm)
+        self.assertEqual(events[0].alarmId, eventtypes.LidAlarmActivated.AlarmidEnum.EmptyCartridgeAlarm)
 
         p = self.process.process(events, time_start=None, time_end=None)
 
@@ -59,6 +59,73 @@ class TestProcessAlarm(unittest.TestCase):
         })
 
 
+
+# Real captured LID_ALARM_ACTIVATED (eventCode 5) events
+# (deviceAssignmentId redacted).
+ALARM_PUMP_RESET = {
+    "deviceAssignmentId": "00000000-0000-0000-0000-000000000000",
+    "eventCode": 5,
+    "sequenceGroup": 0,
+    "sequenceNumber": 2353636,
+    "pumpDateTime": "2024-02-26T22:44:48",
+    "estimatedDateTime": "2024-02-26T22:44:48Z",
+    "eventProperties": {"alarmId": 3, "faultLocatorData": 8230, "param1": 0, "param2": 0},
+}
+
+ALARM_EMPTY_CARTRIDGE = {
+    "deviceAssignmentId": "00000000-0000-0000-0000-000000000000",
+    "eventCode": 5,
+    "sequenceGroup": 0,
+    "sequenceNumber": 1124751,
+    "pumpDateTime": "2024-12-23T09:36:37",
+    "estimatedDateTime": "2024-12-23T09:36:37Z",
+    "eventProperties": {"alarmId": 8, "faultLocatorData": 8241, "param1": 103, "param2": 9.475377},
+}
+
+ALARM_RESUME = {
+    "deviceAssignmentId": "00000000-0000-0000-0000-000000000000",
+    "eventCode": 5,
+    "sequenceGroup": 0,
+    "sequenceNumber": 448136,
+    "pumpDateTime": "2026-05-16T00:06:00",
+    "estimatedDateTime": "2026-05-16T00:06:00Z",
+    "eventProperties": {"alarmId": 18, "faultLocatorData": 8311, "param1": 5228339, "param2": 0},
+}
+
+
+class TestProcessAlarmJson(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        self.tconnect = TConnectApi()
+        self.nightscout = NightscoutApi()
+        self.process = ProcessAlarm(self.tconnect, self.nightscout, 'abcdef', pretend=False)
+        self.nightscout.last_uploaded_entry = lambda *args, **kwargs: None
+
+    def test_reportable_alarms(self):
+        p = self.process.process(list(Events([dict(ALARM_PUMP_RESET), dict(ALARM_EMPTY_CARTRIDGE)])), None, None)
+
+        self.assertEqual(len(p), 2)
+        self.assertDictEqual(p[0], {
+            'eventType': 'Alarm',
+            'reason': 'PumpResetAlarm',
+            'notes': 'PumpResetAlarm',
+            'created_at': '2024-02-26 22:44:48-05:00',
+            'enteredBy': 'Pump (tconnectsync)',
+            'pump_event_id': '2353636'
+        })
+        self.assertDictEqual(p[1], {
+            'eventType': 'Alarm',
+            'reason': 'EmptyCartridgeAlarm',
+            'notes': 'EmptyCartridgeAlarm',
+            'created_at': '2024-12-23 09:36:37-05:00',
+            'enteredBy': 'Pump (tconnectsync)',
+            'pump_event_id': '1124751'
+        })
+
+    def test_resume_alarm_skipped(self):
+        p = self.process.process(list(Events([dict(ALARM_RESUME)])), None, None)
+        self.assertEqual(p, [])
 
 
 if __name__ == '__main__':

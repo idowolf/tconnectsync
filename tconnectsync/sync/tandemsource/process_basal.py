@@ -1,3 +1,4 @@
+import datetime
 import logging
 import arrow
 
@@ -15,23 +16,26 @@ from ...parser.nightscout import (
 )
 from ...parser.tidepool import TidepoolEntry
 
+from typing import Iterable, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...eventparser.raw_event import BaseEvent
+
 logger = logging.getLogger(__name__)
 
 class ProcessBasal:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
         self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.BASAL in self.features
 
-    def process(self, events, time_start, time_end):
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         logger.debug("ProcessBasal: querying for last uploaded entry")
-        
-        # Query for last upload based on destination
         if UPLOAD_DESTINATION == 'tidepool':
             last_upload = self.upload_api.last_uploaded_entry('basal', time_start=time_start, time_end=time_end)
             last_upload_time = None
@@ -85,60 +89,46 @@ class ProcessBasal:
 
         return upload_entries
 
-    def write(self, upload_entries):
+    def write(self, upload_entries: List[dict]) -> int:
         count = 0
-        destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
         if UPLOAD_DESTINATION == 'tidepool':
             # For Tidepool, upload all basal entries in a single batch to maintain sequence
             if upload_entries:
                 if self.pretend:
                     for entry in upload_entries:
-                        logger.info("Would upload to %s: %s" % (destination, entry))
+                        logger.info("Would upload to Tidepool: %s" % entry)
                     count = len(upload_entries)
                 else:
                     # Sort entries by time to ensure proper sequence
                     upload_entries.sort(key=lambda x: x.get('time', ''))
-                    
+
                     logger.info("Uploading %d basal entries to Tidepool in batch..." % len(upload_entries))
                     self.upload_api.upload_entries(upload_entries)
                     count = len(upload_entries)
-                    logger.info("✓ Uploaded %d basal entries successfully" % count)
         else:
-            # For Nightscout, upload one at a time (original behavior)
             for entry in upload_entries:
                 if self.pretend:
-                    logger.info("Would upload to %s: %s" % (destination, entry))
+                    logger.info("Would upload to Nightscout: %s" % entry)
                 else:
-                    logger.info("Uploading to %s: %s" % (destination, entry))
+                    logger.info("Uploading to Nightscout: %s" % entry)
                     self.upload_api.upload_entry(entry)
                 count += 1
 
         return count
 
-    def basal_to_entry(self, start, duration, event):
-        """
-        Convert basal event to either Nightscout or Tidepool format based on UPLOAD_DESTINATION.
-        """
-        if UPLOAD_DESTINATION == 'tidepool':
-            return self.basal_to_tidepool(start, duration, event)
-        else:
-            return self.basal_to_nsentry(start, duration, event)
-    
-    def basal_to_tidepool(self, start, duration, event):
-        """
-        Convert basal event to Tidepool format.
-        """
+
+    def basal_to_entry(self, start: arrow.Arrow, duration: datetime.timedelta, event: "BaseEvent") -> Optional[dict]:
+        entry_cls = TidepoolEntry if UPLOAD_DESTINATION == 'tidepool' else NightscoutEntry
         if type(event) == eventtypes.LidBasalRateChange:
-            value = insulin_float_round(event.commandedbasalrate)
+            value = insulin_float_round(event.commandedBasalRate)
             if IGNORE_ZERO_UNIT_BASAL and value < 0.01:
                 logger.info("Ignoring basal entry with %.2f unit basal because IGNORE_ZERO_UNIT_BASAL=true: %s" % (value, event))
                 return None
-            return TidepoolEntry.basal(
+            return entry_cls.basal(
                 value = value,
                 duration_mins = duration.total_seconds() / 60,
                 created_at = start.format(),
-                reason = ', '.join(bitmask_to_list(event.changetype)),
+                reason = ', '.join(bitmask_to_list(event.changeType)),
                 pump_event_id = "%s" % event.seqNum
             )
         if type(event) == eventtypes.LidBasalDelivery:
@@ -146,7 +136,7 @@ class ProcessBasal:
             if IGNORE_ZERO_UNIT_BASAL and value < 0.01:
                 logger.info("Ignoring basal entry with %.2f unit basal because IGNORE_ZERO_UNIT_BASAL=true: %s" % (value, event))
                 return None
-            return TidepoolEntry.basal(
+            return entry_cls.basal(
                 value = value,
                 duration_mins = duration.total_seconds() / 60,
                 created_at = start.format(),
@@ -154,31 +144,6 @@ class ProcessBasal:
                 pump_event_id = "%s" % event.seqNum
             )
 
-    def basal_to_nsentry(self, start, duration, event):
-        """
-        Convert basal event to Nightscout format (original implementation).
-        """
-        if type(event) == eventtypes.LidBasalRateChange:
-            value = insulin_float_round(event.commandedbasalrate)
-            if IGNORE_ZERO_UNIT_BASAL and value < 0.01:
-                logger.info("Ignoring basal entry with %.2f unit basal because IGNORE_ZERO_UNIT_BASAL=true: %s" % (value, event))
-                return None
-            return NightscoutEntry.basal(
-                value = value,
-                duration_mins = duration.total_seconds() / 60,
-                created_at = start.format(),
-                reason = ', '.join(bitmask_to_list(event.changetype)),
-                pump_event_id = "%s" % event.seqNum
-            )
-        if type(event) == eventtypes.LidBasalDelivery:
-            value = insulin_milliunits_to_real(event.commandedRate)
-            if IGNORE_ZERO_UNIT_BASAL and value < 0.01:
-                logger.info("Ignoring basal entry with %.2f unit basal because IGNORE_ZERO_UNIT_BASAL=true: %s" % (value, event))
-                return None
-            return NightscoutEntry.basal(
-                value = value,
-                duration_mins = duration.total_seconds() / 60,
-                created_at = start.format(),
-                reason = ', '.join(bitmask_to_list(event.commandedRateSource)),
-                pump_event_id = "%s" % event.seqNum
-            )
+    # Backwards-compatible alias for the Nightscout-only converter
+    def basal_to_nsentry(self, start: arrow.Arrow, duration: datetime.timedelta, event: "BaseEvent") -> Optional[dict]:
+        return self.basal_to_entry(start, duration, event)

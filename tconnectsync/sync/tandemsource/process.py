@@ -1,5 +1,13 @@
 import logging
 import collections
+import arrow
+
+from types import ModuleType
+from typing import List, Optional, Tuple, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...nightscout import NightscoutApi
+    from ...api.tandemsource import BffPump
 
 from ...features import DEVICE_STATUS, DEFAULT_FEATURES
 from ...eventparser import events as eventtypes
@@ -20,11 +28,11 @@ from .update_profiles import UpdateProfiles
 logger = logging.getLogger(__name__)
 
 class ProcessTimeRange:
-    def __init__(self, tconnect, upload_api, tconnectDevice, pretend, secret, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnectDevice: "BffPump", pretend: bool, secret: ModuleType, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
         self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
-        self.tconnect_device_id = tconnectDevice['tconnectDeviceId']
-        self.max_date_with_events = tconnectDevice['maxDateWithEvents']
+        self.tconnect_device_id = tconnectDevice['assignmentId']
+        self.max_date_with_events = tconnectDevice.get('maxDateOfEvents')
         self.pretend = pretend
         self.secret = secret
         self.features = features
@@ -47,7 +55,7 @@ class ProcessTimeRange:
         UpdateProfiles
     ]
 
-    def process(self, time_start, time_end):
+    def process(self, time_start: arrow.Arrow, time_end: arrow.Arrow) -> Tuple[int, Optional[int]]:
         fetch_all_event_types = self.secret.FETCH_ALL_EVENT_TYPES or DEVICE_STATUS in self.features
 
         logger.info(f"ProcessTimeRange time_start={time_start} time_end={time_end} tconnect_device_id={self.tconnect_device_id} features={self.features} fetch_all_event_types={fetch_all_event_types}")
@@ -81,7 +89,11 @@ class ProcessTimeRange:
                 c = self.event_classes[clazz](self.tconnect, self.upload_api, self.tconnect_device_id, self.pretend, self.features)
                 if c.enabled():
                     logger.info("%s is enabled from features %s" % (clazz, self.features))
-                    ns_entries = c.process(events, events_first_time, events_last_time)
+                    # Cap events_last_time at time_end to handle pump clock drift
+                    # Ensure time_end is timezone-aware for comparison
+                    time_end_aware = arrow.get(time_end)
+                    capped_time_end = min(events_last_time, time_end_aware) if events_last_time else time_end_aware
+                    ns_entries = c.process(events, events_first_time, capped_time_end)
                     w = c.write(ns_entries)
                     if w:
                         processed_count += w

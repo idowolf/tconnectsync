@@ -1,6 +1,11 @@
 import logging
 import arrow
 
+from typing import Iterable, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...eventparser.raw_event import BaseEvent
+
 from ...features import DEFAULT_FEATURES
 from ... import features
 from ...eventparser.generic import Events, decode_raw_events, EVENT_LEN
@@ -17,19 +22,18 @@ from ...secret import UPLOAD_DESTINATION
 logger = logging.getLogger(__name__)
 
 class ProcessBasalResume:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
-        self.upload_api = upload_api
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.PUMP_EVENTS in self.features
 
-    def process(self, events, time_start, time_end):
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         logger.debug("ProcessBasalResume: querying for last uploaded resume-suspension")
-        
         if UPLOAD_DESTINATION == 'tidepool':
             last_upload = self.upload_api.last_uploaded_entry('deviceEvent', time_start=time_start, time_end=time_end, subtype='status', status='resumed')
             last_upload_time = None
@@ -50,15 +54,16 @@ class ProcessBasalResume:
                     logger.info("Skipping BasalResume event not after last upload time: %s (time range: %s - %s)" % (event, time_start, time_end))
                 continue
 
-            upload_entries.append(self.resume_to_entry(event))
+            entry = self.resume_to_entry(event)
+            if entry:
+                upload_entries.append(entry)
 
 
         return upload_entries
 
-    def write(self, upload_entries):
+    def write(self, upload_entries: List[dict]) -> int:
         count = 0
         destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
         for entry in upload_entries:
             if self.pretend:
                 logger.info("Would upload to %s: %s" % (destination, entry))
@@ -69,20 +74,20 @@ class ProcessBasalResume:
 
         return count
 
-    def resume_to_entry(self, event):
+
+    def resume_to_entry(self, event: "BaseEvent") -> Optional[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
             return self.resume_to_tidepool(event)
-        else:
-            return self.resume_to_nsentry(event)
-    
-    def resume_to_tidepool(self, event):
+        return self.resume_to_nsentry(event)
+
+    def resume_to_tidepool(self, event: "BaseEvent") -> Optional[dict]:
         if type(event) == eventtypes.LidPumpingResumed:
             return TidepoolEntry.basalresume(
                 created_at = event.eventTimestamp.format(),
                 pump_event_id = "%s" % event.seqNum
             )
 
-    def resume_to_nsentry(self, event):
+    def resume_to_nsentry(self, event: "BaseEvent") -> Optional[dict]:
         if type(event) == eventtypes.LidPumpingResumed:
             return NightscoutEntry.basalresume(
                 created_at = event.eventTimestamp.format(),

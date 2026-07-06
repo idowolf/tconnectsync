@@ -1,6 +1,12 @@
 import logging
 import arrow
 
+from typing import Iterable, List, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ...api import TConnectApi
+    from ...nightscout import NightscoutApi
+    from ...eventparser.raw_event import BaseEvent
+
 from ...features import DEFAULT_FEATURES
 from ... import features
 from ...eventparser.generic import Events, decode_raw_events, EVENT_LEN
@@ -20,35 +26,33 @@ NOT_ENDED = "Not Ended"
 logger = logging.getLogger(__name__)
 
 class ProcessUserMode:
-    def __init__(self, tconnect, upload_api, tconnect_device_id, pretend, features=DEFAULT_FEATURES):
+    def __init__(self, tconnect: "TConnectApi", upload_api, tconnect_device_id: str, pretend: bool, features: List[str] = DEFAULT_FEATURES) -> None:
         self.tconnect = tconnect
-        self.upload_api = upload_api
+        self.upload_api = upload_api  # Can be NightscoutApi or TidepoolApi
         self.tconnect_device_id = tconnect_device_id
         self.pretend = pretend
         self.features = features
 
-    def enabled(self):
+    def enabled(self) -> bool:
         return features.PUMP_EVENTS in self.features
 
-    def process(self, events, time_start, time_end):
+    def process(self, events: Iterable, time_start: arrow.Arrow, time_end: arrow.Arrow) -> List[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
             # Exercise/sleep modes are uploaded to Tidepool as physicalActivity,
-            # so deduplication must query that same type
+            # so deduplication must query that same type. Tidepool records can't
+            # be updated after upload, so the "not ended" flow doesn't apply:
+            # in-progress activities are skipped until they complete.
             logger.debug("ProcessUserMode: querying for last uploaded physicalActivity (exercise/sleep)")
-            exercise_last_upload = self.upload_api.last_uploaded_entry('physicalActivity', time_start=time_start, time_end=time_end)
-            exercise_last_upload_time = None
-            if exercise_last_upload:
-                exercise_last_upload_time = arrow.get(exercise_last_upload["time"])
-            logger.info("ProcessUserMode: Last Tidepool exercise upload: %s" % exercise_last_upload_time)
-            
+            last_upload = self.upload_api.last_uploaded_entry('physicalActivity', time_start=time_start, time_end=time_end)
+            last_upload_time = None
+            if last_upload:
+                last_upload_time = arrow.get(last_upload["time"])
+
+            exercise_last_upload = last_upload
+            sleep_last_upload = last_upload
             exercise_not_ended = False
-            # Note: Tidepool handling of incomplete events may differ from Nightscout
-            
-            sleep_last_upload = exercise_last_upload  # Simplified: using same query
-            sleep_last_upload_time = exercise_last_upload_time
             sleep_not_ended = False
-            
-            last_upload_time = exercise_last_upload_time
+            logger.info("ProcessUserMode: Last Tidepool usermode upload: %s" % last_upload_time)
         else:
             logger.debug("ProcessUserMode: querying for last uploaded exercise entry")
             exercise_last_upload = self.upload_api.last_uploaded_entry(EXERCISE_EVENTTYPE, time_start=time_start, time_end=time_end)
@@ -83,10 +87,10 @@ class ProcessUserMode:
             elif sleep_last_upload_time:
                 last_upload_time = sleep_last_upload_time
 
-        logger.info("ProcessUserMode: Last upload: %s" % last_upload_time)
+            logger.info("ProcessUserMode: Last Nightscout usermode upload: %s" % last_upload_time)
 
 
-        upload_entries = []
+        ns_entries = []
 
         processed_sleep = []
         processed_exercise = []
@@ -105,11 +109,11 @@ class ProcessUserMode:
                     processed_sleep.append((start_sleep, event))
                     start_sleep = None
                 else:
-                    if sleep_not_ended and UPLOAD_DESTINATION != 'tidepool':
-                        logger.info("ProcessUserMode: Found StopSleep without StartSleep, with incomplete sleep event: %s NS: %s" % (event, sleep_last_upload))
-                        upload_entries.append(self.process_unended_sleep_stop(event, sleep_last_upload))
+                    if sleep_not_ended:
+                        logger.info("ProcessUserMode: Found StopSleep without StartSleep, with incomplete sleep event in nightscout: %s NS: %s" % (event, sleep_last_upload))
+                        ns_entries.append(self.process_unended_sleep_stop(event, sleep_last_upload))
                     else:
-                        logger.warning("ProcessUserMode: Found StopSleep without StartSleep: %s" % event)
+                        logger.warning("ProcessUserMode: Found StopSleep without StartSleep, and no active sleep event in nightscout: %s" % event)
             elif self.is_start_exercise(event):
                 start_exercise = event
             elif self.is_stop_exercise(event):
@@ -117,11 +121,11 @@ class ProcessUserMode:
                     processed_exercise.append((start_exercise, event))
                     start_exercise = None
                 else:
-                    if exercise_not_ended and UPLOAD_DESTINATION != 'tidepool':
-                        logger.info("ProcessUserMode: Found StopExercise without StartExercise, with incomplete exercise event: %s NS: %s" % (event, exercise_last_upload))
-                        upload_entries.append(self.process_unended_exercise_stop(event, exercise_last_upload))
+                    if exercise_not_ended:
+                        logger.info("ProcessUserMode: Found StopExercise without StartExercise, with incomplete exercise event in nightscout: %s NS: %s" % (event, exercise_last_upload))
+                        ns_entries.append(self.process_unended_exercise_stop(event, exercise_last_upload))
                     else:
-                        logger.warning("ProcessUserMode: Found StopExercise without StartExercise: %s" % event)
+                        logger.warning("ProcessUserMode: Found StopExercise without StartExercise, and no active exercise event in nightscout: %s" % event)
             else:
                 logger.warning("ProcessUserMode: not sure how to process event: %s" % event)
 
@@ -141,18 +145,17 @@ class ProcessUserMode:
                 logger.info("ProcessUserMode: exercise is active")
 
         for items in processed_sleep:
-            upload_entries.append(self.sleep_to_entry(start=items[0], stop=items[1], time_end=time_end))
+            ns_entries.append(self.sleep_to_entry(start=items[0], stop=items[1], time_end=time_end))
 
         for items in processed_exercise:
-            upload_entries.append(self.exercise_to_entry(start=items[0], stop=items[1], time_end=time_end))
+            ns_entries.append(self.exercise_to_entry(start=items[0], stop=items[1], time_end=time_end))
 
-        return upload_entries
+        return ns_entries
 
-    def write(self, upload_entries):
+    def write(self, ns_entries: List[dict]) -> int:
         count = 0
         destination = "Tidepool" if UPLOAD_DESTINATION == 'tidepool' else "Nightscout"
-        
-        for entry in upload_entries:
+        for entry in ns_entries:
             if self.pretend:
                 logger.info("Would upload to %s: %s" % (destination, entry))
             else:
@@ -162,68 +165,75 @@ class ProcessUserMode:
 
         return count
 
-    def is_start_sleep(self, event):
-        return event.requestedaction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StartSleep
-    def is_stop_sleep(self, event):
-        return event.requestedaction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopSleep or \
-               event.requestedaction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopAll
-    def is_start_exercise(self, event):
-        return event.requestedaction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StartExercise
-    def is_stop_exercise(self, event):
-        return event.requestedaction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopExercise or \
-               event.requestedaction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopAll
+    def is_start_sleep(self, event: "BaseEvent") -> bool:
+        return event.requestedAction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StartSleep
+    def is_stop_sleep(self, event: "BaseEvent") -> bool:
+        return event.requestedAction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopSleep or \
+               event.requestedAction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopAll
+    def is_start_exercise(self, event: "BaseEvent") -> bool:
+        return event.requestedAction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StartExercise
+    def is_stop_exercise(self, event: "BaseEvent") -> bool:
+        return event.requestedAction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopExercise or \
+               event.requestedAction == eventtypes.LidAaUserModeChange.RequestedactionEnum.StopAll
 
 
-    def sleep_to_entry(self, start, stop=None, time_end=None):
+    def sleep_to_entry(self, start: "BaseEvent", stop: Optional["BaseEvent"] = None, time_end: Optional[arrow.Arrow] = None) -> Optional[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
             return self.sleep_to_tidepool(start, stop, time_end)
-        else:
-            return self.sleep_to_nsentry(start, stop, time_end)
-    
-    def exercise_to_entry(self, start, stop=None, time_end=None):
+        return self.sleep_to_nsentry(start, stop, time_end)
+
+    def exercise_to_entry(self, start: "BaseEvent", stop: Optional["BaseEvent"] = None, time_end: Optional[arrow.Arrow] = None) -> Optional[dict]:
         if UPLOAD_DESTINATION == 'tidepool':
             return self.exercise_to_tidepool(start, stop, time_end)
-        else:
-            return self.exercise_to_nsentry(start, stop, time_end)
+        return self.exercise_to_nsentry(start, stop, time_end)
 
-    def sleep_to_tidepool(self, start, stop=None, time_end=None):
+    def sleep_to_tidepool(self, start: "BaseEvent", stop: Optional["BaseEvent"] = None, time_end: Optional[arrow.Arrow] = None) -> Optional[dict]:
+        # Only completed activities are uploaded to Tidepool (see process())
+        if not (start and stop):
+            return None
+
+        reason = None
+        if start.sleepStartedByGui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
+            reason = "Sleep (Manual)"
+        elif start.activeSleepSchedule:
+            reason = "Sleep (Scheduled)"
+
+        duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
+        return TidepoolEntry.activity(
+            created_at=start.eventTimestamp.format(),
+            reason=reason,
+            duration=duration_mins,
+            event_type='sleep',
+            pump_event_id = "%s,%s" % (start.seqNum, stop.seqNum)
+        )
+
+    def exercise_to_tidepool(self, start: "BaseEvent", stop: Optional["BaseEvent"] = None, time_end: Optional[arrow.Arrow] = None) -> Optional[dict]:
+        # Only completed activities are uploaded to Tidepool (see process())
+        if not (start and stop):
+            return None
+
+        reason = "Exercise"
+        if start.exerciseChoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
+            reason = "Exercise (Timed)"
+
+        if stop.exerciseStoppedByTimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
+            reason += " (Stopped by timer)"
+
+        duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
+        return TidepoolEntry.activity(
+            created_at=start.eventTimestamp.format(),
+            reason=reason,
+            duration=duration_mins,
+            event_type='exercise',
+            pump_event_id = "%s,%s" % (start.seqNum, stop.seqNum)
+        )
+
+    def sleep_to_nsentry(self, start: "BaseEvent", stop: Optional["BaseEvent"] = None, time_end: Optional[arrow.Arrow] = None) -> Optional[dict]:
         if start and stop:
             reason = None
-            if start.sleepstartedbygui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
+            if start.sleepStartedByGui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
                 reason = "Sleep (Manual)"
-            elif start.activesleepschedule:
-                reason = "Sleep (Scheduled)"
-
-            duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
-            return TidepoolEntry.activity(
-                created_at=start.eventTimestamp.format(),
-                reason=reason,
-                duration=duration_mins,
-                event_type='sleep',
-                pump_event_id = "%s,%s" % (start.seqNum, stop.seqNum)
-            )
-        elif start:
-            reason = None
-            if start.sleepstartedbygui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
-                reason = "Sleep (Manual)"
-            elif start.activesleepscheduleRaw:
-                reason = "Sleep (Scheduled)"
-
-            duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
-            return TidepoolEntry.activity(
-                created_at=start.eventTimestamp.format(),
-                reason=reason + " - " + NOT_ENDED if reason else NOT_ENDED,
-                duration=duration_mins,
-                event_type='sleep',
-                pump_event_id = "%s" % start.seqNum
-            )
-
-    def sleep_to_nsentry(self, start, stop=None, time_end=None):
-        if start and stop:
-            reason = None
-            if start.sleepstartedbygui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
-                reason = "Sleep (Manual)"
-            elif start.activesleepschedule:
+            elif start.activeSleepSchedule:
                 reason = "Sleep (Scheduled)"
 
             duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
@@ -236,9 +246,9 @@ class ProcessUserMode:
             )
         elif start:
             reason = None
-            if start.sleepstartedbygui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
+            if start.sleepStartedByGui == eventtypes.LidAaUserModeChange.SleepstartedbyguiEnum.TrueVal:
                 reason = "Sleep (Manual)"
-            elif start.activesleepscheduleRaw:
+            elif start.activeSleepScheduleRaw:
                 reason = "Sleep (Scheduled)"
 
             duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
@@ -251,44 +261,13 @@ class ProcessUserMode:
             )
 
 
-    def exercise_to_tidepool(self, start, stop=None, time_end=None):
+    def exercise_to_nsentry(self, start: "BaseEvent", stop: Optional["BaseEvent"] = None, time_end: Optional[arrow.Arrow] = None) -> Optional[dict]:
         if start and stop:
             reason = "Exercise"
-            if start.exercisechoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
+            if start.exerciseChoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
                 reason = "Exercise (Timed)"
 
-            if stop.exercisestoppedbytimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
-                reason += " (Stopped by timer)"
-
-            duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
-            return TidepoolEntry.activity(
-                created_at=start.eventTimestamp.format(),
-                reason=reason,
-                duration=duration_mins,
-                event_type='exercise',
-                pump_event_id = "%s,%s" % (start.seqNum, stop.seqNum)
-            )
-        elif start:
-            reason = "Exercise"
-            if start.exercisechoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
-                reason = "Exercise (Timed)"
-
-            duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
-            return TidepoolEntry.activity(
-                created_at=start.eventTimestamp.format(),
-                reason=reason + " - " + NOT_ENDED,
-                duration=duration_mins,
-                event_type='exercise',
-                pump_event_id = "%s" % start.seqNum
-            )
-
-    def exercise_to_nsentry(self, start, stop=None, time_end=None):
-        if start and stop:
-            reason = "Exercise"
-            if start.exercisechoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
-                reason = "Exercise (Timed)"
-
-            if stop.exercisestoppedbytimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
+            if stop.exerciseStoppedByTimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
                 reason += " (Stopped by timer)"
 
             duration_mins = (stop.eventTimestamp - start.eventTimestamp).total_seconds() / 60
@@ -301,7 +280,7 @@ class ProcessUserMode:
             )
         elif start:
             reason = "Exercise"
-            if start.exercisechoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
+            if start.exerciseChoice == eventtypes.LidAaUserModeChange.ExercisechoiceEnum.Timed:
                 reason = "Exercise (Timed)"
 
             duration_mins = (time_end - start.eventTimestamp).total_seconds() / 60
@@ -313,7 +292,7 @@ class ProcessUserMode:
                 pump_event_id = "%s" % start.seqNum
             )
 
-    def process_unended_sleep_stop(self, event, sleep_last_upload):
+    def process_unended_sleep_stop(self, event: "BaseEvent", sleep_last_upload: dict) -> dict:
         logger.info("ProcessUserMode: Deleting old sleep event treatment before pushing update (delete treatments/%s)" % sleep_last_upload["_id"])
         if self.pretend:
             logger.info("ProcessUserMode: Skipping delete in pretend mode")
@@ -329,7 +308,7 @@ class ProcessUserMode:
             pump_event_id="%s,%s" % (sleep_last_upload.get("pump_event_id",""), event.seqNum)
         )
 
-    def process_unended_exercise_stop(self, event, exercise_last_upload):
+    def process_unended_exercise_stop(self, event: "BaseEvent", exercise_last_upload: dict) -> dict:
         logger.info("ProcessUserMode: Deleting old exercise event treatment before pushing update (delete treatments/%s)" % exercise_last_upload["_id"])
         if self.pretend:
             logger.info("ProcessUserMode: Skipping delete in pretend mode")
@@ -337,7 +316,7 @@ class ProcessUserMode:
             self.upload_api.delete_entry('treatments/%s' % exercise_last_upload["_id"])
 
         reason = exercise_last_upload["reason"].replace(" - %s" % NOT_ENDED, "")
-        if event.exercisestoppedbytimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
+        if event.exerciseStoppedByTimer == eventtypes.LidAaUserModeChange.ExercisestoppedbytimerEnum.TrueVal:
             reason += " (Stopped by timer)"
 
         duration_mins = (event.eventTimestamp - arrow.get(exercise_last_upload["created_at"])).total_seconds() / 60
