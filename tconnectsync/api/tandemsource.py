@@ -403,6 +403,11 @@ class TandemSourceApi:
                 algorithms=['RS256'],
                 audience=audience,
                 issuer=issuer,
+                # Tolerate small clock skew between Tandem's auth server and
+                # the local clock: iat/nbf are otherwise validated with zero
+                # leeway, and a token issued marginally "in the future" kills
+                # the sync with ImmatureSignatureError.
+                leeway=60,
             )
         except jwt.InvalidAudienceError:
             logger.warning(
@@ -415,6 +420,7 @@ class TandemSourceApi:
                 algorithms=['RS256'],
                 issuer=issuer,
                 options={"verify_aud": False},
+                leeway=60,
             )
 
         logger.info("Decoded JWT: %s" % json.dumps(id_token_claims))
