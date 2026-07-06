@@ -4,6 +4,7 @@ import unittest
 import arrow
 
 from tconnectsync.sync.tandemsource.process import ProcessTimeRange
+from tconnectsync import features
 from tconnectsync.eventparser import events as eventtypes
 from tconnectsync.eventparser.generic import Event, Events
 
@@ -60,12 +61,15 @@ class TestProcessTimeRangeBasalDuration(unittest.TestCase):
             FETCH_ALL_EVENT_TYPES=False
         )
 
+        # Pin features to BASAL: this test exercises basal duration handling
+        # and should not depend on which processors DEFAULT_FEATURES enables.
         self.process = ProcessTimeRange(
             self.tconnect,
             self.nightscout,
             self.tconnectDevice,
             pretend=False,
-            secret=self.secret
+            secret=self.secret,
+            features=[features.BASAL]
         )
 
     def test_basal_duration_capped_when_future_event_timestamp(self):
@@ -169,12 +173,15 @@ class TestProcessTimeRangeJsonBasal(unittest.TestCase):
             'maxDateOfEvents': '2026-05-07T00:20:00-04:00'
         }
 
+        # Pin features to BASAL: this test exercises basal duration handling
+        # and should not depend on which processors DEFAULT_FEATURES enables.
         self.process = ProcessTimeRange(
             self.tconnect,
             self.nightscout,
             self.tconnectDevice,
             pretend=False,
-            secret=self.secret
+            secret=self.secret,
+            features=[features.BASAL]
         )
 
         self.tconnect._tandemsource.events = list(Events([dict(BASAL_JSON_1), dict(BASAL_JSON_2)]))
