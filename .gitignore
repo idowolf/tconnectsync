@@ -10,4 +10,5 @@ build
 tconnectsync-check-output.log
 ignore_*
 .venv/
-.vscode/.idea/
+.vscode/
+.idea/
